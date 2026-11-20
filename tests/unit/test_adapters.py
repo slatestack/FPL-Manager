@@ -40,6 +40,12 @@ async def test_understat_adapter_falls_back_to_html():
     assert len(recs) == 5
 
 
+def test_understat_maintenance_page_is_reported():
+    html = "<html><body><h1>Understat.com</h1><p>We will come back soon</p></body></html>"
+    with pytest.raises(understat.UpstreamError, match="maintenance"):
+        understat.parse_league_html(html)
+
+
 def test_odds_parse_consensus_and_totals():
     events = load_fixture("odds_api_epl.json")
     rec = odds_api.parse_match_odds(events[0])

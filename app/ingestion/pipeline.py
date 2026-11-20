@@ -152,7 +152,10 @@ async def ingest_player_histories(
                 return
         rows = transform.history_rows(summary)
         async with pool.acquire() as conn, conn.transaction():
-            written += await upsert_rows(conn, "player_gw_history", rows, ["player_id", "fixture_id"])
+            n = await upsert_rows(conn, "player_gw_history", rows, ["player_id", "fixture_id"])
+        # Not `written += await ...`: that reads `written` before the await and loses
+        # increments made by concurrent tasks in the meantime.
+        written += n
 
     await asyncio.gather(*(one(pid) for pid in player_ids))
     if player_ids and len(failures) == len(player_ids):

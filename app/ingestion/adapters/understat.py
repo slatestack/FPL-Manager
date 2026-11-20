@@ -36,6 +36,9 @@ def decode_embedded_json(escaped: str) -> Any:
 def parse_league_html(html: str) -> list[dict[str, Any]]:
     match = _EMBEDDED_PLAYERS.search(html)
     if not match:
+        if "come back soon" in html.lower():
+            # Understat answers every URL with HTTP 200 and this page while in maintenance.
+            raise UpstreamError("understat is down for maintenance ('We will come back soon' page)")
         raise UpstreamError("understat league page has no embedded playersData")
     return decode_embedded_json(match.group("data"))
 

@@ -67,6 +67,7 @@ async def test_history_and_rolling_form(pool, fpl):
     # Only players with minutes > 0 are fetched (ids 9 and 10 have 0 minutes).
     assert result.details["players"] == 8 and result.details["failed"] == 0
     assert await pool.fetchval("SELECT COUNT(*) FROM player_gw_history") == 4
+    assert result.rows_written == 4, "row count must not lose updates across concurrent tasks"
 
     form = await pool.fetchrow("SELECT * FROM player_rolling_form WHERE player_id=5")
     assert form["matches"] == 2 and form["minutes"] == 175
