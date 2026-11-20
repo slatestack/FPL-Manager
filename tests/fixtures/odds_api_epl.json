@@ -1,0 +1,164 @@
+[
+ {
+  "id": "evt1",
+  "sport_key": "soccer_epl",
+  "sport_title": "EPL",
+  "commence_time": "2026-11-21T12:30:00Z",
+  "home_team": "Arsenal",
+  "away_team": "Tottenham Hotspur",
+  "bookmakers": [
+   {
+    "key": "williamhill",
+    "title": "williamhill",
+    "last_update": "2026-11-20T03:00:00Z",
+    "markets": [
+     {
+      "key": "h2h",
+      "last_update": "2026-11-20T03:00:00Z",
+      "outcomes": [
+       {
+        "name": "Arsenal",
+        "price": 1.75
+       },
+       {
+        "name": "Tottenham Hotspur",
+        "price": 4.6
+       },
+       {
+        "name": "Draw",
+        "price": 3.9
+       }
+      ]
+     },
+     {
+      "key": "totals",
+      "last_update": "2026-11-20T03:00:00Z",
+      "outcomes": [
+       {
+        "name": "Over",
+        "price": 1.8,
+        "point": 2.5
+       },
+       {
+        "name": "Under",
+        "price": 2.05,
+        "point": 2.5
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "key": "skybet",
+    "title": "skybet",
+    "last_update": "2026-11-20T03:00:00Z",
+    "markets": [
+     {
+      "key": "h2h",
+      "last_update": "2026-11-20T03:00:00Z",
+      "outcomes": [
+       {
+        "name": "Arsenal",
+        "price": 1.73
+       },
+       {
+        "name": "Tottenham Hotspur",
+        "price": 4.75
+       },
+       {
+        "name": "Draw",
+        "price": 4.0
+       }
+      ]
+     },
+     {
+      "key": "totals",
+      "last_update": "2026-11-20T03:00:00Z",
+      "outcomes": [
+       {
+        "name": "Over",
+        "price": 1.83,
+        "point": 2.5
+       },
+       {
+        "name": "Under",
+        "price": 2.0,
+        "point": 2.5
+       }
+      ]
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "id": "evt2",
+  "sport_key": "soccer_epl",
+  "sport_title": "EPL",
+  "commence_time": "2026-11-22T16:30:00Z",
+  "home_team": "Manchester City",
+  "away_team": "Wolverhampton Wanderers",
+  "bookmakers": [
+   {
+    "key": "williamhill",
+    "title": "williamhill",
+    "last_update": "2026-11-20T03:00:00Z",
+    "markets": [
+     {
+      "key": "h2h",
+      "last_update": "2026-11-20T03:00:00Z",
+      "outcomes": [
+       {
+        "name": "Manchester City",
+        "price": 1.3
+       },
+       {
+        "name": "Wolverhampton Wanderers",
+        "price": 10.0
+       },
+       {
+        "name": "Draw",
+        "price": 6.0
+       }
+      ]
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "id": "evt3",
+  "sport_key": "soccer_epl",
+  "sport_title": "EPL",
+  "commence_time": "2026-11-23T20:00:00Z",
+  "home_team": "Liverpool",
+  "away_team": "Everton",
+  "bookmakers": [
+   {
+    "key": "williamhill",
+    "title": "williamhill",
+    "last_update": "2026-11-20T03:00:00Z",
+    "markets": [
+     {
+      "key": "h2h",
+      "last_update": "2026-11-20T03:00:00Z",
+      "outcomes": [
+       {
+        "name": "Liverpool",
+        "price": 1.5
+       },
+       {
+        "name": "Everton",
+        "price": 6.5
+       },
+       {
+        "name": "Draw",
+        "price": 4.5
+       }
+      ]
+     }
+    ]
+   }
+  ]
+ }
+]

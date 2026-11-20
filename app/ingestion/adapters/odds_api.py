@@ -1,0 +1,133 @@
+"""The Odds API (v4) adapter: consensus 1X2 + Over/Under 2.5, optional anytime goalscorer.
+
+Docs: https://the-odds-api.com/liveapi/guides/v4/  Each bulk call costs quota per market
+and region; per-event player-prop calls cost extra, so they are opt-in.
+"""
+
+from __future__ import annotations
+
+import logging
+from collections import defaultdict
+from datetime import datetime, timezone
+from typing import Any
+
+from app.ingestion import odds_math
+from app.ingestion.adapters.base import FixtureOddsRecord, OddsSnapshot, PlayerGoalOddsRecord
+from app.ingestion.http import ResilientClient, UpstreamError
+
+log = logging.getLogger(__name__)
+
+GOALSCORER_MARKET = "player_goal_scorer_anytime"
+
+
+def _parse_time(value: str) -> datetime:
+    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
+def parse_match_odds(event: dict[str, Any]) -> FixtureOddsRecord | None:
+    home, away = event["home_team"], event["away_team"]
+    h2h: list[list[float]] = []
+    over: list[float] = []
+    for book in event.get("bookmakers", []):
+        for market in book.get("markets", []):
+            outcomes = {o["name"]: o for o in market.get("outcomes", [])}
+            try:
+                if market["key"] == "h2h" and {home, away, "Draw"} <= outcomes.keys():
+                    h2h.append(
+                        odds_math.implied_probabilities(
+                            [outcomes[home]["price"], outcomes["Draw"]["price"], outcomes[away]["price"]]
+                        )
+                    )
+                elif market["key"] == "totals" and {"Over", "Under"} <= outcomes.keys():
+                    if float(outcomes["Over"].get("point", 0)) == 2.5 and float(outcomes["Under"].get("point", 0)) == 2.5:
+                        over.append(
+                            odds_math.implied_probabilities([outcomes["Over"]["price"], outcomes["Under"]["price"]])[0]
+                        )
+            except ValueError:
+                log.warning("ignoring malformed %s market from %s", market.get("key"), book.get("key"))
+    if not h2h:
+        return None
+    p_home, p_draw, p_away = odds_math.consensus(h2h)
+    return FixtureOddsRecord(
+        home_team=home,
+        away_team=away,
+        commence_time=_parse_time(event["commence_time"]),
+        bookmaker_count=len(h2h),
+        p_home=p_home,
+        p_draw=p_draw,
+        p_away=p_away,
+        p_over_2_5=sum(over) / len(over) if over else None,
+        event_id=event.get("id"),
+    )
+
+
+def parse_goalscorer_odds(event: dict[str, Any]) -> list[PlayerGoalOddsRecord]:
+    prices: dict[str, list[float]] = defaultdict(list)
+    for book in event.get("bookmakers", []):
+        for market in book.get("markets", []):
+            if market.get("key") != GOALSCORER_MARKET:
+                continue
+            for o in market.get("outcomes", []):
+                # Player props put the player in `description` ("Yes"/"No" in `name`).
+                if o.get("name") == "No":
+                    continue
+                player = o.get("description") or o.get("name")
+                if player and float(o.get("price", 0)) > 1.0:
+                    prices[player].append(float(o["price"]))
+    commence = _parse_time(event["commence_time"])
+    return [
+        PlayerGoalOddsRecord(
+            player_name=name,
+            home_team=event["home_team"],
+            away_team=event["away_team"],
+            commence_time=commence,
+            bookmaker_count=len(p),
+            median_decimal_odds=odds_math.median_price(p),
+        )
+        for name, p in sorted(prices.items())
+    ]
+
+
+class OddsApiAdapter:
+    source = "the-odds-api"
+
+    def __init__(
+        self,
+        http: ResilientClient,
+        *,
+        api_key: str,
+        base_url: str = "https://api.the-odds-api.com/v4",
+        sport_key: str = "soccer_epl",
+        regions: str = "uk",
+        include_goalscorers: bool = False,
+    ):
+        self._http = http
+        self._key = api_key
+        self._base = base_url.rstrip("/")
+        self._sport = sport_key
+        self._regions = regions
+        self._goalscorers = include_goalscorers
+
+    async def fetch(self) -> OddsSnapshot:
+        captured = datetime.now(timezone.utc)
+        events = await self._http.get_json(
+            f"{self._base}/sports/{self._sport}/odds",
+            params={"apiKey": self._key, "regions": self._regions, "markets": "h2h,totals", "oddsFormat": "decimal"},
+        )
+        snapshot = OddsSnapshot(source=self.source, captured_at=captured)
+        for event in events:
+            rec = parse_match_odds(event)
+            if rec is not None:
+                snapshot.fixtures.append(rec)
+        if self._goalscorers:
+            for event in events:
+                try:
+                    detail = await self._http.get_json(
+                        f"{self._base}/sports/{self._sport}/events/{event['id']}/odds",
+                        params={"apiKey": self._key, "regions": self._regions, "markets": GOALSCORER_MARKET, "oddsFormat": "decimal"},
+                    )
+                except UpstreamError as exc:
+                    log.warning("goalscorer odds unavailable for %s: %s", event.get("id"), exc)
+                    continue
+                snapshot.goalscorers.extend(parse_goalscorer_odds(detail))
+        return snapshot

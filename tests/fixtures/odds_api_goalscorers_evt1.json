@@ -1,0 +1,51 @@
+{
+ "id": "evt1",
+ "sport_key": "soccer_epl",
+ "commence_time": "2026-11-21T12:30:00Z",
+ "home_team": "Arsenal",
+ "away_team": "Tottenham Hotspur",
+ "bookmakers": [
+  {
+   "key": "williamhill",
+   "title": "William Hill",
+   "markets": [
+    {
+     "key": "player_goal_scorer_anytime",
+     "outcomes": [
+      {
+       "name": "Yes",
+       "description": "Bukayo Saka",
+       "price": 2.6
+      },
+      {
+       "name": "Yes",
+       "description": "Son Heung-Min",
+       "price": 3.1
+      },
+      {
+       "name": "Yes",
+       "description": "Unknown Kid",
+       "price": 9.0
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "key": "skybet",
+   "title": "Sky Bet",
+   "markets": [
+    {
+     "key": "player_goal_scorer_anytime",
+     "outcomes": [
+      {
+       "name": "Yes",
+       "description": "Bukayo Saka",
+       "price": 2.5
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}
