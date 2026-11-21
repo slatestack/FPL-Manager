@@ -20,6 +20,7 @@ from app.ingestion import pipeline
 from app.ingestion.adapters.archive import FPLArchiveAdapter
 from app.ingestion.adapters.base import OddsAdapter, XGAdapter
 from app.ingestion.fpl_client import FPLClient
+from app.ingestion.http import UpstreamError
 from app.ingestion.schedule import Phase, next_poll_delay, polling_phase
 
 log = logging.getLogger(__name__)
@@ -160,6 +161,8 @@ class IngestionWorker:
         for job, fn in jobs:
             try:
                 await self.run_locked(job, fn)
+            except UpstreamError as exc:  # a source being down is expected now and then: one line, no traceback
+                log.warning("%s skipped: %s", job, exc)
             except Exception:
                 log.exception("%s ingestion failed", job)
 
