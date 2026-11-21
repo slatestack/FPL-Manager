@@ -38,6 +38,10 @@ class Settings(BaseSettings):
     odds_include_goalscorers: bool = False  # per-event calls; consumes extra API quota
     odds_min_interval_minutes: int = 30     # quota protection
 
+    # Past seasons used as model training / backtest data
+    archive_base_url: str = "https://raw.githubusercontent.com/vaastav/Fantasy-Premier-League/master/data"
+    archive_seasons: str = "2024-25,2025-26"
+
     # Raw upstream payload retention (bootstrap-static is ~1.5 MB and changes on most polls)
     raw_snapshot_retention_days: int = 14
 
@@ -46,6 +50,10 @@ class Settings(BaseSettings):
 
     # Ingestion lock (Redis) - must outlive the longest ingestion job
     ingest_lock_timeout_seconds: int = 900
+
+    @property
+    def archive_season_list(self) -> list[str]:
+        return [s.strip() for s in self.archive_seasons.split(",") if s.strip()]
 
     @property
     def odds_enabled(self) -> bool:

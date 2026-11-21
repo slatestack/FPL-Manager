@@ -5,6 +5,7 @@ from __future__ import annotations
 from contextlib import AsyncExitStack
 
 from app.config import Settings
+from app.ingestion.adapters.archive import FPLArchiveAdapter
 from app.ingestion.adapters.odds_api import OddsApiAdapter
 from app.ingestion.adapters.understat import UnderstatAdapter
 from app.ingestion.fpl_client import FPLClient
@@ -39,3 +40,8 @@ async def build_sources(
             include_goalscorers=settings.odds_include_goalscorers,
         )
     return fpl, xg, odds
+
+
+async def build_archive(settings: Settings, stack: AsyncExitStack) -> FPLArchiveAdapter:
+    http = await stack.enter_async_context(_http(settings))
+    return FPLArchiveAdapter(http, base_url=settings.archive_base_url)

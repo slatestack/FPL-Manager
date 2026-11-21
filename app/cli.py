@@ -3,13 +3,17 @@
     python -m app migrate                 # apply SQL migrations
     python -m app ingest core             # bootstrap-static + fixtures
     python -m app ingest history|entry|xg|odds|all
-    python -m app poll                    # long-running deadline-aware ingestion worker
+    python -m app ingest archive          # past seasons used as model training data
+    python -m app predict                 # xP for the next 5 gameweeks -> player_predictions
+    python -m app backtest --season 2025-26
+    python -m app poll                    # long-running deadline-aware worker (ingestion + xP)
 """
 
 from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import logging
 import signal
 import sys
@@ -21,12 +25,12 @@ from app.config import Settings, get_settings
 from app.db.migrate import migrate
 from app.db.pool import create_pool
 from app.ingestion import pipeline
-from app.ingestion.factory import build_sources
+from app.ingestion.factory import build_archive, build_sources
 from app.ingestion.worker import IngestionWorker
 
 log = logging.getLogger("app")
 
-JOBS = ("core", "history", "entry", "xg", "odds")
+JOBS = ("core", "history", "entry", "xg", "odds", "archive")
 
 
 def _configure_logging(verbose: bool) -> None:
@@ -64,6 +68,10 @@ async def _ingest(settings: Settings, which: str) -> int:
                         log.warning("understat disabled; skipping xg")
                         continue
                     fn = lambda: pipeline.ingest_xg(pool, xg)  # noqa: E731
+                elif job == "archive":
+                    adapter = await build_archive(settings, stack)
+                    seasons = settings.archive_season_list
+                    fn = lambda: pipeline.ingest_archive(pool, adapter, seasons)  # noqa: E731
                 else:
                     if odds is None:
                         log.warning("FPL_ODDS_API_KEY not set; skipping odds")
@@ -80,13 +88,70 @@ async def _ingest(settings: Settings, which: str) -> int:
     return 1 if failures else 0
 
 
+async def _predict(settings: Settings) -> int:
+    from app.ml.service import run_prediction
+
+    pool = await create_pool(settings.database_url)
+    try:
+        result = await pipeline.run_job(pool, "predict", lambda: _predict_job(pool))
+    finally:
+        await pool.close()
+    s = result.details
+    print(f"xP run {s['run_timestamp']}: GW{s['gameweeks'][0]}-{s['gameweeks'][-1]}, {s['players']} players, {s['seconds']}s")
+    print(f"Top projected for GW{s['gameweeks'][0]}:")
+    for row in s["top"]:
+        print(f"  {row['web_name']:<18} {row['position']}  xP {row['xp']:5.2f}  P(play) {row['prob_play']:.2f}")
+    return 0
+
+
+async def _predict_job(pool) -> pipeline.JobResult:
+    from app.ml.service import run_prediction
+
+    s = await run_prediction(pool)
+    return pipeline.JobResult(
+        rows_written=s.players * len(s.gameweeks),
+        details={"run_timestamp": s.run_timestamp.isoformat(), "gameweeks": s.gameweeks, "players": s.players,
+                 "seconds": s.seconds, "top": s.top},
+    )
+
+
+async def _backtest(settings: Settings, season: str, first: int, last: int, save: bool) -> int:
+    import asyncpg
+
+    from app.ml import MODEL_VERSION
+    from app.ml.backtest import run_backtest
+    from app.ml.data import load_model_data
+
+    conn = await asyncpg.connect(settings.database_url)
+    try:
+        data = await load_model_data(conn)
+        summary, _ = await asyncio.to_thread(run_backtest, data, season, first_gw=first, last_gw=last)
+        m = summary["metrics"]
+        for section in ("all_players", "when_played"):
+            print(section)
+            for name, v in m[section].items():
+                print(f"  {name:<12} MAE {v['mae']:.3f}  RMSE {v['rmse']:.3f}  Spearman {v['spearman']:.3f}  bias {v['bias']:+.3f}  n={v['n']}")
+        print("top-30 mean actual points:", {k: round(v, 2) for k, v in m["top30_mean_actual_points"].items()})
+        print("P(start) calibration:", [(c["predicted"], c["actual"]) for c in m["p_start_calibration"]])
+        print("total xP vs actual:", round(m["totals"]["expected_points"]), "vs", round(m["totals"]["actual_points"]))
+        if save:
+            await conn.execute(
+                "INSERT INTO model_backtests (season, model_version, params, metrics) VALUES ($1, $2, $3::jsonb, $4::jsonb)",
+                season, MODEL_VERSION, json.dumps(summary["params"]), json.dumps(m),
+            )
+    finally:
+        await conn.close()
+    return 0
+
+
 async def _poll(settings: Settings) -> int:
     pool = await create_pool(settings.database_url)
     redis = Redis.from_url(settings.redis_url)
     try:
         async with AsyncExitStack() as stack:
             fpl, xg, odds = await build_sources(settings, stack)
-            worker = IngestionWorker(settings, pool, redis, fpl, xg_adapter=xg, odds_adapter=odds)
+            archive = await build_archive(settings, stack)
+            worker = IngestionWorker(settings, pool, redis, fpl, xg_adapter=xg, odds_adapter=odds, archive_adapter=archive)
             loop = asyncio.get_running_loop()
             for sig in (signal.SIGINT, signal.SIGTERM):
                 try:
@@ -108,6 +173,12 @@ def main(argv: list[str] | None = None) -> int:
     ingest = sub.add_parser("ingest", help="run ingestion job(s) once")
     ingest.add_argument("job", choices=(*JOBS, "all"))
     sub.add_parser("poll", help="run the deadline-aware ingestion worker")
+    sub.add_parser("predict", help="compute xP for the next gameweeks and store them")
+    bt = sub.add_parser("backtest", help="walk-forward evaluation of the xP model on a past season")
+    bt.add_argument("--season", default="2025-26")
+    bt.add_argument("--from-gw", type=int, default=6)
+    bt.add_argument("--to-gw", type=int, default=38)
+    bt.add_argument("--save", action="store_true", help="store metrics in model_backtests")
     args = parser.parse_args(argv)
 
     _configure_logging(args.verbose)
@@ -118,6 +189,10 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "ingest":
         return asyncio.run(_ingest(settings, args.job))
+    if args.command == "predict":
+        return asyncio.run(_predict(settings))
+    if args.command == "backtest":
+        return asyncio.run(_backtest(settings, args.season, args.from_gw, args.to_gw, args.save))
     return asyncio.run(_poll(settings))
 
 

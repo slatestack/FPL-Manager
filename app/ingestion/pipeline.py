@@ -15,6 +15,7 @@ import asyncpg
 
 from app.db.upsert import upsert_rows
 from app.ingestion import odds_math, schemas, transform
+from app.ingestion.adapters.archive import FPLArchiveAdapter
 from app.ingestion.adapters.base import OddsAdapter, OddsSnapshot, XGAdapter
 from app.ingestion.fpl_client import FPLClient
 from app.ingestion.names import PlayerResolver, TeamResolver
@@ -353,3 +354,24 @@ async def ingest_odds(pool: asyncpg.Pool, adapter: OddsAdapter) -> JobResult:
             "unmatched_goalscorers": len(unmatched_players),
         },
     )
+
+
+# ----------------------------------------------------------------------------- past seasons (training data)
+
+
+async def ingest_archive(pool: asyncpg.Pool, adapter: FPLArchiveAdapter, seasons: list[str]) -> JobResult:
+    details: dict[str, Any] = {}
+    total = 0
+    for season in seasons:
+        data = await adapter.fetch(season)
+        async with pool.acquire() as conn, conn.transaction():
+            n = await upsert_rows(conn, "archive_players", data.players, ["season", "element"])
+            n += await upsert_rows(conn, "archive_fixtures", data.fixtures, ["season", "fixture_id"])
+            # Chunked: a season is ~30k rows.
+            for i in range(0, len(data.matches), 5000):
+                n += await upsert_rows(
+                    conn, "archive_player_matches", data.matches[i : i + 5000], ["season", "element", "fixture_id"]
+                )
+        details[season] = {"players": len(data.players), "fixtures": len(data.fixtures), "matches": len(data.matches)}
+        total += n
+    return JobResult(rows_written=total, details=details)

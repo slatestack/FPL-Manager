@@ -17,6 +17,7 @@ from redis.asyncio import Redis
 
 from app.config import Settings
 from app.ingestion import pipeline
+from app.ingestion.adapters.archive import FPLArchiveAdapter
 from app.ingestion.adapters.base import OddsAdapter, XGAdapter
 from app.ingestion.fpl_client import FPLClient
 from app.ingestion.schedule import Phase, next_poll_delay, polling_phase
@@ -28,6 +29,12 @@ XG_INTERVAL = timedelta(hours=12)
 ENTRY_INTERVAL = timedelta(hours=6)
 STANDARD_ODDS_INTERVAL = timedelta(hours=24)
 PRUNE_INTERVAL = timedelta(hours=24)
+ARCHIVE_INTERVAL = timedelta(days=7)
+PREDICT_INTERVAL = {  # xP refresh cadence by deadline window
+    Phase.STANDARD: timedelta(hours=6),
+    Phase.PRE_DEADLINE: timedelta(minutes=30),
+    Phase.CRITICAL: timedelta(minutes=10),
+}
 
 
 def utcnow() -> datetime:
@@ -44,6 +51,8 @@ class IngestionWorker:
         *,
         xg_adapter: XGAdapter | None = None,
         odds_adapter: OddsAdapter | None = None,
+        archive_adapter: FPLArchiveAdapter | None = None,
+        predict_enabled: bool = True,
         clock: Callable[[], datetime] = utcnow,
     ):
         self.settings = settings
@@ -52,6 +61,8 @@ class IngestionWorker:
         self.fpl = fpl
         self.xg_adapter = xg_adapter
         self.odds_adapter = odds_adapter
+        self.archive_adapter = archive_adapter
+        self.predict_enabled = predict_enabled
         self.clock = clock
         self._stop = asyncio.Event()
 
@@ -94,6 +105,15 @@ class IngestionWorker:
             except Exception:  # lock expired - nothing to release
                 log.warning("lock for %s expired before release", job)
 
+    async def _predict(self) -> pipeline.JobResult:
+        from app.ml.service import run_prediction
+
+        s = await run_prediction(self.pool, now=self.clock())
+        return pipeline.JobResult(
+            rows_written=s.players * len(s.gameweeks),
+            details={"run_timestamp": s.run_timestamp.isoformat(), "gameweeks": s.gameweeks, "seconds": s.seconds},
+        )
+
     # ------------------------------------------------------------------ one tick
     async def tick(self) -> timedelta:
         """Run every due job once; return how long to sleep before the next tick."""
@@ -129,11 +149,23 @@ class IngestionWorker:
                 adapter_o = self.odds_adapter
                 jobs.append(("odds", lambda: pipeline.ingest_odds(self.pool, adapter_o)))
 
+        if self.archive_adapter is not None and await self._due("archive", ARCHIVE_INTERVAL):
+            archive, seasons = self.archive_adapter, self.settings.archive_season_list
+            jobs.append(("archive", lambda: pipeline.ingest_archive(self.pool, archive, seasons)))
+
         for job, fn in jobs:
             try:
                 await self.run_locked(job, fn)
             except Exception:
                 log.exception("%s ingestion failed", job)
+
+        # Expected points: after ingestion so each run sees the freshest data.
+        predict_every = PREDICT_INTERVAL.get(phase)
+        if self.predict_enabled and predict_every is not None and await self._due("predict", predict_every):
+            try:
+                await self.run_locked("predict", self._predict)
+            except Exception:
+                log.exception("xP prediction failed")
 
         if await self._due("prune", PRUNE_INTERVAL):
             async def prune() -> pipeline.JobResult:

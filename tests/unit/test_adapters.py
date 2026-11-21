@@ -61,3 +61,19 @@ def test_goalscorer_parse_takes_median_per_player():
     assert recs["Bukayo Saka"].bookmaker_count == 2
     assert recs["Bukayo Saka"].median_decimal_odds == pytest.approx(2.55)
     assert recs["Son Heung-Min"].p_anytime_goal == pytest.approx(1 / 3.1)
+
+
+def test_archive_parse_normalises_real_sample():
+    from pathlib import Path
+
+    from app.ingestion.adapters.archive import parse_season
+
+    fx = Path(__file__).parents[1] / "fixtures"
+    read = lambda n: (fx / f"archive_2025-26_{n}.csv").read_text(encoding="utf-8")  # noqa: E731
+    s = parse_season("2025-26", read("merged_gw"), read("players_raw"), read("teams"), read("fixtures"))
+    assert {p["position"] for p in s.players} == {"GKP", "DEF", "MID", "FWD"}
+    assert {f["team_h_code"] for f in s.fixtures} & {3, 43, 6, 39}
+    assert len(s.matches) == 529
+    row = s.matches[0]
+    assert row["season"] == "2025-26" and isinstance(row["kickoff_time"].year, int)
+    assert all(m["defensive_contribution"] is not None for m in s.matches)
