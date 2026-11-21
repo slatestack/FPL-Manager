@@ -1,4 +1,4 @@
-"""Notifications: Telegram (with inline kill-switch button), generic webhook, or log only."""
+"""Notifications: WhatsApp (CallMeBot), Telegram (with inline kill-switch button), generic webhook, or log only."""
 
 from __future__ import annotations
 
@@ -45,6 +45,34 @@ class TelegramNotifier:
         await self.call("sendMessage", payload)
 
 
+class WhatsAppNotifier:
+    """WhatsApp alerts through CallMeBot's free personal relay (one-way: it can't receive commands).
+
+    The API key travels in the query string, so it is never logged or put in an error message.
+    WhatsApp messages can't carry buttons; when an action could be stopped, the message says how.
+    """
+
+    MAX_CHARS = 1500
+
+    def __init__(self, phone: str, apikey: str, *, api_url: str = "https://api.callmebot.com/whatsapp.php",
+                 transport: httpx.AsyncBaseTransport | None = None):
+        self.phone = phone.replace(" ", "")
+        self._apikey = apikey
+        self.api_url = api_url
+        self._transport = transport
+
+    async def send(self, text: str, *, urgent: bool = False, kill_button: bool = False) -> None:
+        body = ("🚨 " if urgent else "") + text
+        if kill_button:
+            body += "\n\nTo stop automatic submission: open http://localhost:8000 on your PC and press Kill switch."
+        if len(body) > self.MAX_CHARS:
+            body = body[: self.MAX_CHARS - 1] + "…"
+        async with httpx.AsyncClient(timeout=30, transport=self._transport) as c:
+            resp = await c.get(self.api_url, params={"phone": self.phone, "text": body, "apikey": self._apikey})
+        if resp.status_code != 200 or "error" in resp.text.lower()[:300]:
+            raise RuntimeError(f"WhatsApp message not accepted by CallMeBot (HTTP {resp.status_code})")
+
+
 class WebhookNotifier:
     def __init__(self, url: str, *, transport: httpx.AsyncBaseTransport | None = None):
         self.url = url
@@ -71,6 +99,8 @@ def build_notifier(settings: Settings) -> MultiNotifier:
     notifiers: list[Notifier] = [LogNotifier()]
     if settings.telegram_bot_token and settings.telegram_chat_id:
         notifiers.append(TelegramNotifier(settings.telegram_bot_token, settings.telegram_chat_id))
+    if settings.whatsapp_phone and settings.whatsapp_apikey:
+        notifiers.append(WhatsAppNotifier(settings.whatsapp_phone, settings.whatsapp_apikey, api_url=settings.whatsapp_api_url))
     if settings.alert_webhook_url:
         notifiers.append(WebhookNotifier(settings.alert_webhook_url))
     return MultiNotifier(notifiers)

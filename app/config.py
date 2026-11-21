@@ -9,7 +9,8 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_prefix="FPL_", env_file=".env", extra="ignore")
+    # str_strip_whitespace: a .env edited on Windows can leave "\r" at the end of every value.
+    model_config = SettingsConfigDict(env_prefix="FPL_", env_file=".env", extra="ignore", str_strip_whitespace=True)
 
     database_url: str = "postgresql://fpl:fpl@localhost:5432/fpl"
     redis_url: str = "redis://localhost:6379/0"
@@ -68,6 +69,9 @@ class Settings(BaseSettings):
     telegram_bot_token: str | None = None
     telegram_chat_id: str | None = None
     alert_webhook_url: str | None = None
+    whatsapp_phone: str | None = None        # your WhatsApp number with country code, e.g. +19195551234
+    whatsapp_apikey: str | None = None       # from CallMeBot (message their bot once to get it)
+    whatsapp_api_url: str = "https://api.callmebot.com/whatsapp.php"
 
     # Ingestion lock (Redis) - must outlive the longest ingestion job
     ingest_lock_timeout_seconds: int = 900

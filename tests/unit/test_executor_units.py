@@ -85,3 +85,22 @@ def _base(**over):
 ])
 def test_guardrails(override, failing):
     assert [c.name for c in _base(**override).failures] == failing
+
+
+async def test_whatsapp_notifier_sends_and_never_leaks_the_key():
+    import httpx
+    import respx
+
+    from app.notify import WhatsAppNotifier
+
+    n = WhatsAppNotifier("+1 919 555 0100", "SECRETKEY", api_url="https://wa.test/whatsapp.php")
+    with respx.mock() as router:
+        route = router.get("https://wa.test/whatsapp.php").mock(return_value=httpx.Response(200, text="Message queued."))
+        await n.send("GW12 plan", kill_button=True)
+        q = dict(route.calls.last.request.url.params)
+        assert q["phone"] == "+19195550100" and q["apikey"] == "SECRETKEY"
+        assert q["text"].startswith("GW12 plan") and "Kill switch" in q["text"]
+        router.get("https://wa.test/whatsapp.php").mock(return_value=httpx.Response(203, text="APIKey is invalid"))
+        with pytest.raises(RuntimeError) as err:
+            await n.send("x")
+    assert "SECRETKEY" not in str(err.value)

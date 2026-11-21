@@ -256,6 +256,27 @@ async def _poll(settings: Settings) -> int:
     return 0
 
 
+async def _notify_test(settings: Settings) -> int:
+    from app.notify import LogNotifier, build_notifier
+
+    notifier = build_notifier(settings)
+    channels = [type(n).__name__.removesuffix("Notifier") for n in notifier.notifiers if not isinstance(n, LogNotifier)]
+    if not channels:
+        print("No alert channel configured (set FPL_WHATSAPP_PHONE and FPL_WHATSAPP_APIKEY in .env).")
+        return 1
+    failures = 0
+    for n in notifier.notifiers:
+        if isinstance(n, LogNotifier):
+            continue
+        try:
+            await n.send("✅ FPL Manager test message: alerts are working.")
+            print(f"{type(n).__name__.removesuffix('Notifier')}: sent")
+        except Exception as exc:
+            failures += 1
+            print(f"{type(n).__name__.removesuffix('Notifier')}: FAILED ({exc})")
+    return 1 if failures else 0
+
+
 async def _auth(settings: Settings, action: str) -> int:
     import getpass
 
@@ -386,6 +407,7 @@ def main(argv: list[str] | None = None) -> int:
     bt.add_argument("--from-gw", type=int, default=6)
     bt.add_argument("--to-gw", type=int, default=38)
     bt.add_argument("--save", action="store_true", help="store metrics in model_backtests")
+    sub.add_parser("notify-test", help="send a test message to every configured alert channel")
     au = sub.add_parser("auth", help="manage the FPL token vault")
     au.add_argument("action", choices=("keygen", "login", "set", "status", "refresh"))
     cf = sub.add_parser("config", help="kill switch and execution settings")
@@ -407,6 +429,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "ingest":
         return asyncio.run(_ingest(settings, args.job))
+    if args.command == "notify-test":
+        return asyncio.run(_notify_test(settings))
     if args.command == "auth":
         return asyncio.run(_auth(settings, args.action))
     if args.command == "config":

@@ -88,7 +88,7 @@ from other machines: the dashboard listens on `localhost` only.
 * Windows (PowerShell): `powershell -ExecutionPolicy Bypass -File scripts\install.ps1`
 
 The installer:
-1. asks for your team ID and, optionally, your Odds API key and Telegram bot
+1. asks for your team ID and, optionally, your Odds API key and WhatsApp number for alerts
 2. generates the secret keys into `.env` (readable only by you)
 3. builds and starts everything
 4. walks you through signing in to FPL (a normal sign-in link; paste back the address you land on)
@@ -273,8 +273,8 @@ urgent alert. When tokens are stored, the optimiser also uses the exact `my-team
 
 ## Scheduler, alerts and control plane (Phase 6)
 
-`python -m app poll` runs everything: ingestion, xP, a login keep-alive every 4 h, the Telegram bot
-and these deadline actions (each once per gameweek, tracked in `scheduled_actions`). The worker
+`python -m app poll` runs everything: ingestion, xP, a login keep-alive every 4 h, alerts and these
+deadline actions (each once per gameweek, tracked in `scheduled_actions`). The worker
 wakes up exactly at each boundary:
 
 | When | Action |
@@ -284,8 +284,16 @@ wakes up exactly at each boundary:
 | T−15m | commit if armed (guardrails apply); otherwise a reminder with the moves to make by hand |
 | missed | if the worker was down through the commit window, an urgent alert |
 
-Telegram commands (only your `FPL_TELEGRAM_CHAT_ID` is obeyed): `/status`, `/plan`, `/killswitch`,
-`/enable`, `/dryrun`, `/help`.
+**Alerts.** Plans, receipts and problems are sent to every configured channel; test with
+`python -m app notify-test`.
+
+* **WhatsApp** (one-way) through the free CallMeBot relay. Add +34 644 66 32 62 to your phone's
+  contacts and send it *I allow callmebot to send me messages*. It replies with an API key. Then set
+  `FPL_WHATSAPP_PHONE` (with country code) and `FPL_WHATSAPP_APIKEY`. WhatsApp can't take commands
+  back, so the kill switch is on the dashboard.
+* **Telegram** (two-way): only your `FPL_TELEGRAM_CHAT_ID` is obeyed. Commands are `/status`, `/plan`,
+  `/killswitch`, `/enable`, `/dryrun`, `/login` and `/help`.
+* **Webhook:** `FPL_ALERT_WEBHOOK_URL` receives `{"text", "urgent"}`.
 
 | Method | Endpoint | Auth |
 | --- | --- | --- |
