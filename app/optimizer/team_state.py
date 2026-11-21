@@ -179,3 +179,23 @@ async def fetch_team_state(fpl, pool, entry_id: int, next_gameweek: int, *, free
     raw = {"picks_event": picks_event, "picks": picks.get("picks"), "entry_history": picks.get("entry_history"),
            "history_chips": history.get("chips"), "transfers_count": len(transfers)}
     return state, raw
+
+
+def team_state_from_my_team(my_team, entry_id: int, next_gameweek: int, chip_definitions: Sequence[Mapping[str, Any]]) -> TeamState:
+    """Exact state from the authenticated ``my-team`` endpoint (Phase 5)."""
+    chips = []
+    for d in chip_definitions:
+        start, stop = int(d["start_event"]), int(d["stop_event"])
+        if start <= next_gameweek <= stop and my_team.chip_status(d["name"]) == "available":
+            chips.append(ChipWindow(d["name"], start, stop))
+    warnings = []
+    ft = my_team.free_transfers
+    if ft is None:
+        warnings.append(f"transfers are unlimited this gameweek ({my_team.active_chip or 'chip'} active)")
+        ft = MAX_FREE_TRANSFERS
+    return TeamState(
+        entry_id=entry_id, next_gameweek=next_gameweek, squad=sorted(my_team.squad), bank=my_team.bank,
+        selling_price={p.element: p.selling_price for p in my_team.picks},
+        purchase_price={p.element: p.purchase_price for p in my_team.picks},
+        free_transfers=ft, chips_available=chips, warnings=warnings,
+    )

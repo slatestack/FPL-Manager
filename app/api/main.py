@@ -8,7 +8,11 @@ from contextlib import asynccontextmanager
 
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Query, Response
+import hmac
+from datetime import datetime, timezone
+from typing import Literal
+
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Response
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -190,6 +194,7 @@ async def dashboard(team_id: int | None = None) -> dict[str, object]:
         "gameweeks": gameweeks,
         "players": players,
         "optimization": await _optimization_view(str(opt_id)) if opt_id else None,
+        "control": await status(team_id) if team_id else None,
     }
 
 
@@ -208,3 +213,133 @@ async def _optimization_view(run_id: str) -> dict[str, object]:
         "chip_evaluation": row["chip_evaluation"], "plan": plan, "solver": row["solver"],
         "team_state": {k: row["inputs"]["team_state"][k] for k in ("squad", "bank", "free_transfers", "chips_available", "warnings")},
     }
+
+
+# ------------------------------------------------------------------ Section 9 control plane
+
+
+def require_token(authorization: str | None = Header(default=None)) -> None:
+    """Mutating endpoints need ``Authorization: Bearer $FPL_API_TOKEN``; they are disabled if no token is configured."""
+    expected = get_settings().api_token
+    if not expected:
+        raise HTTPException(403, "control endpoints are disabled: set FPL_API_TOKEN")
+    supplied = (authorization or "").removeprefix("Bearer ").strip()
+    if not hmac.compare_digest(supplied.encode(), expected.encode()):
+        raise HTTPException(401, "invalid API token")
+
+
+@app.get("/api/v1/status/{team_id}")
+async def status(team_id: int) -> dict[str, object]:
+    pool = app.state.pool
+    now = datetime.now(timezone.utc)
+    gw = await pool.fetchrow(
+        "SELECT gameweek_id, deadline_time FROM gameweeks WHERE deadline_time > $1 ORDER BY deadline_time LIMIT 1", now)
+    cfg = await pool.fetchrow(
+        """SELECT auto_execute_enabled, max_hits_per_gw, chip_aggression_profile, encrypted_auth_cookie IS NOT NULL AS has_tokens,
+                  auth_expires_at, auth_last_check_at, auth_last_check_ok, auth_last_error
+           FROM system_config WHERE team_id = $1""", team_id)
+    opt = await pool.fetchrow(
+        "SELECT inputs, plan FROM optimization_runs WHERE team_id = $1 ORDER BY created_at DESC LIMIT 1", team_id)
+    squad: list[dict[str, object]] = []
+    if opt:
+        ids = opt["inputs"]["team_state"]["squad"]
+        rows = await pool.fetch(
+            """SELECT p.player_id, p.web_name, p.position, t.short_name AS team, pp.xp_total::float AS xp_next
+               FROM players p JOIN teams t ON t.team_id = p.team_id
+               LEFT JOIN latest_player_predictions pp ON pp.player_id = p.player_id AND pp.target_gw = $2
+               WHERE p.player_id = ANY($1::int[])""", ids, gw["gameweek_id"] if gw else None)
+        squad = [dict(r) for r in rows]
+    last = await pool.fetchrow(
+        """SELECT id, gameweek, execution_type, status, error_message, created_at FROM execution_logs
+           WHERE team_id = $1 ORDER BY created_at DESC LIMIT 1""", team_id)
+    actions = await pool.fetch(
+        "SELECT action, status, finished_at FROM scheduled_actions WHERE team_id=$1 AND gameweek=$2",
+        team_id, gw["gameweek_id"] if gw else None)
+    return {
+        "next_gameweek": gw["gameweek_id"] if gw else None,
+        "deadline": gw["deadline_time"] if gw else None,
+        "seconds_to_deadline": int((gw["deadline_time"] - now).total_seconds()) if gw else None,
+        "config": ({k: cfg[k] for k in ("auto_execute_enabled", "max_hits_per_gw", "chip_aggression_profile")} if cfg
+                   else {"auto_execute_enabled": False, "max_hits_per_gw": 1, "chip_aggression_profile": "BALANCED"}),
+        "auth": ({k: cfg[k] for k in ("has_tokens", "auth_expires_at", "auth_last_check_at", "auth_last_check_ok", "auth_last_error")}
+                 if cfg else {"has_tokens": False}),
+        "squad": squad,
+        "last_execution": dict(last) if last else None,
+        "deadline_actions": {r["action"]: {"status": r["status"], "finished_at": r["finished_at"]} for r in actions},
+    }
+
+
+class ConfigPatch(BaseModel):
+    auto_execute_enabled: bool | None = None
+    max_hits_per_gw: int | None = None
+    chip_aggression_profile: Literal["CONSERVATIVE", "BALANCED", "AGGRESSIVE"] | None = None
+    auth_tokens: str | None = None   # the browser's oidc.user JSON (stored encrypted)
+
+
+@app.patch("/api/v1/config/{team_id}", dependencies=[Depends(require_token)])
+async def patch_config(team_id: int, body: ConfigPatch) -> dict[str, object]:
+    from app.executor.vault import AuthError, TokenVault, parse_token_input
+
+    pool = app.state.pool
+    await pool.execute(
+        "INSERT INTO system_config (team_id, auto_execute_enabled) VALUES ($1, FALSE) ON CONFLICT (team_id) DO NOTHING", team_id)
+    if body.auth_tokens is not None:
+        try:
+            await TokenVault(get_settings(), pool).store(team_id, parse_token_input(body.auth_tokens))
+        except (AuthError, ValueError) as exc:
+            raise HTTPException(400, f"tokens not accepted: {exc}") from exc
+    if body.auto_execute_enabled:
+        if body.auth_tokens is not None:  # newly imported tokens: verify them against FPL before arming
+            from app.executor.service import Executor
+            from app.notify import LogNotifier
+
+            await Executor(get_settings(), pool, app.state.redis, LogNotifier()).keepalive(team_id)
+        verified = await pool.fetchval(
+            "SELECT encrypted_auth_cookie IS NOT NULL AND auth_last_check_ok IS TRUE FROM system_config WHERE team_id=$1", team_id)
+        if not verified:
+            raise HTTPException(409, "FPL login must pass a live check before auto-execution can be enabled")
+    if body.max_hits_per_gw is not None and not 0 <= body.max_hits_per_gw <= 5:
+        raise HTTPException(422, "max_hits_per_gw must be between 0 and 5")
+    for col in ("auto_execute_enabled", "max_hits_per_gw", "chip_aggression_profile"):
+        value = getattr(body, col)
+        if value is not None:
+            await pool.execute(f"UPDATE system_config SET {col} = $2, updated_at = NOW() WHERE team_id = $1", team_id, value)
+    return (await status(team_id))["config"]
+
+
+@app.post("/api/v1/execute/force", dependencies=[Depends(require_token)])
+async def execute_force(team_id: int | None = None) -> dict[str, object]:
+    """Section 9: run the commit pipeline now. Bypasses the timer, not the guardrails (kill switch included)."""
+    from app.executor.service import Executor
+    from app.notify import build_notifier
+
+    settings = get_settings()
+    team_id = team_id or settings.team_id
+    if not team_id:
+        raise HTTPException(400, "team_id required")
+    if not settings.secret_key:
+        raise HTTPException(409, "FPL_SECRET_KEY is not configured")
+    result = await Executor(settings, app.state.pool, app.state.redis, build_notifier(settings)).commit(team_id, trigger="api_force")
+    return {"status": result.status, "reason": result.reason, "execution_log_id": result.execution_log_id,
+            "gameweek": result.gameweek, "guardrails": result.report}
+
+
+@app.get("/api/v1/audit/{team_id}")
+async def audit(team_id: int, limit: int = Query(default=50, ge=1, le=500)) -> dict[str, object]:
+    """Execution history with projected (plan) vs actual gameweek points."""
+    rows = await app.state.pool.fetch(
+        """SELECT e.id, e.created_at, e.gameweek, e.execution_type, e.status, e.trigger, e.chip_activated,
+                  e.transfers_in, e.transfers_out, e.captain_id, e.projected_xp_gain::float AS projected_xp_gain,
+                  e.error_message, (o.plan -> 0 ->> 'xp')::float AS projected_points, h.points AS actual_points,
+                  h.event_transfers_cost AS hit_points
+           FROM execution_logs e
+           LEFT JOIN optimization_runs o ON o.execution_log_id = e.id
+           LEFT JOIN manager_history h ON h.entry_id = e.team_id AND h.gameweek = e.gameweek
+           WHERE e.team_id = $1 ORDER BY e.created_at DESC LIMIT $2""", team_id, limit)
+    out = []
+    for r in rows:
+        d = dict(r)
+        if d["projected_points"] is not None and d["actual_points"] is not None:
+            d["variance"] = round(d["actual_points"] - d["projected_points"], 2)
+        out.append(d)
+    return {"team_id": team_id, "executions": out}

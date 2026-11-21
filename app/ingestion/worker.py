@@ -53,6 +53,8 @@ class IngestionWorker:
         odds_adapter: OddsAdapter | None = None,
         archive_adapter: FPLArchiveAdapter | None = None,
         predict_enabled: bool = True,
+        scheduler=None,
+        executor=None,
         clock: Callable[[], datetime] = utcnow,
     ):
         self.settings = settings
@@ -63,6 +65,8 @@ class IngestionWorker:
         self.odds_adapter = odds_adapter
         self.archive_adapter = archive_adapter
         self.predict_enabled = predict_enabled
+        self.scheduler = scheduler
+        self.executor = executor
         self.clock = clock
         self._stop = asyncio.Event()
 
@@ -167,6 +171,30 @@ class IngestionWorker:
             except Exception:
                 log.exception("xP prediction failed")
 
+        # Section 7.1 keep-alive: detect expired FPL credentials long before a deadline.
+        if self.executor is not None and self.settings.team_id and await self._due(
+            "auth_keepalive", timedelta(hours=self.settings.keepalive_hours)
+        ):
+            has_tokens = await self.pool.fetchval(
+                "SELECT encrypted_auth_cookie IS NOT NULL FROM system_config WHERE team_id=$1", self.settings.team_id)
+            if has_tokens:
+                async def keepalive() -> pipeline.JobResult:
+                    ok = await self.executor.keepalive(self.settings.team_id)
+                    if not ok:
+                        raise RuntimeError("FPL credentials rejected or expired")
+                    return pipeline.JobResult(rows_written=0)
+                try:
+                    await self.run_locked("auth_keepalive", keepalive)
+                except Exception:
+                    log.warning("auth keep-alive failed")
+
+        # Section 7.2 deadline actions (T-24h dry run, T-30m final lock, T-15m commit).
+        if self.scheduler is not None:
+            try:
+                await self.scheduler.run(self.clock())
+            except Exception:
+                log.exception("deadline actions failed")
+
         if await self._due("prune", PRUNE_INTERVAL):
             async def prune() -> pipeline.JobResult:
                 n = await pipeline.prune_raw_snapshots(self.pool, self.settings.raw_snapshot_retention_days)
@@ -176,7 +204,12 @@ class IngestionWorker:
             except Exception:
                 log.exception("raw snapshot pruning failed")
 
-        return next_poll_delay(self.clock(), deadline)
+        delay = next_poll_delay(self.clock(), deadline)
+        if self.scheduler is not None:
+            wake = self.scheduler.next_wake(self.clock(), deadline)
+            if wake is not None:
+                delay = max(timedelta(seconds=30), min(delay, wake - self.clock() + timedelta(seconds=5)))
+        return delay
 
     # ------------------------------------------------------------------ loop
     def stop(self) -> None:

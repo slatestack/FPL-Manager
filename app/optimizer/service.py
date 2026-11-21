@@ -65,6 +65,33 @@ def optimise(cand: Candidates, state: TeamState, params: OptimizerParams) -> tup
     return plan, baseline, chosen, evals
 
 
+async def load_team_state(pool: asyncpg.Pool, fpl, team_id: int, gw: int, *, free_transfers: int | None = None):
+    """Authenticated my-team when tokens are stored (exact), otherwise the public reconstruction."""
+    from app.config import get_settings
+    from app.executor.client import AuthenticatedFPLClient
+    from app.executor.vault import AuthError, TokenVault
+    from app.optimizer.team_state import team_state_from_my_team
+
+    settings = get_settings()
+    if settings.secret_key:
+        try:
+            vault = TokenVault(settings, pool)
+            tokens = await vault.load(team_id)
+            if tokens is not None:
+                tokens = await vault.valid_tokens(team_id)
+                async with AuthenticatedFPLClient(settings, tokens) as client:
+                    mt = await client.my_team(team_id)
+                defs = [dict(r) for r in await pool.fetch("SELECT name, start_event, stop_event FROM chip_definitions")]
+                state = team_state_from_my_team(mt, team_id, gw, defs)
+                if free_transfers is not None:
+                    state.free_transfers = free_transfers
+                return state, {"source": "my-team", "picks": mt.raw.get("picks"), "transfers": mt.raw.get("transfers")}
+        except AuthError as exc:
+            log.warning("authenticated team state unavailable (%s); using public reconstruction", exc)
+    state, raw = await fetch_team_state(fpl, pool, team_id, gw, free_transfers=free_transfers)
+    return state, {"source": "public", **raw}
+
+
 async def _config(pool: asyncpg.Pool, team_id: int) -> tuple[int, str]:
     row = await pool.fetchrow("SELECT max_hits_per_gw, chip_aggression_profile FROM system_config WHERE team_id = $1", team_id)
     return (row["max_hits_per_gw"], row["chip_aggression_profile"]) if row else (1, "BALANCED")
@@ -84,7 +111,7 @@ async def run_optimization(
            FROM player_predictions WHERE run_timestamp = $1""", run["run_timestamp"])])
     players = pd.DataFrame([dict(r) for r in await pool.fetch(
         "SELECT player_id, web_name, position, team_id, now_cost FROM players")])
-    state, raw = await fetch_team_state(fpl, pool, team_id, int(run["base_gameweek"]), free_transfers=free_transfers)
+    state, raw = await load_team_state(pool, fpl, team_id, int(run["base_gameweek"]), free_transfers=free_transfers)
     for w in state.warnings:
         log.warning("team state: %s", w)
 

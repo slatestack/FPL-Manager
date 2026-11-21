@@ -41,6 +41,7 @@ async function load() {
 function render() {
   renderHeader();
   renderPlan();
+  renderAutopilot();
   renderTableHead();
   renderTable();
   renderJobs();
@@ -120,8 +121,9 @@ function renderPlan() {
   $("plan-meta").textContent = `bank ${money(ts.bank)} · ${opt.solver.status.toLowerCase()} · ${new Date(opt.created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
 
   for (const step of opt.plan) {
-    const outs = [...step.transfers_out].sort((a, b) => POS_ORDER[state.byId.get(a)?.position] - POS_ORDER[state.byId.get(b)?.position]);
-    const ins = [...step.transfers_in].sort((a, b) => POS_ORDER[state.byId.get(a)?.position] - POS_ORDER[state.byId.get(b)?.position]);
+    const byPos = (a, b) => (POS_ORDER[state.byId.get(a)?.position] - POS_ORDER[state.byId.get(b)?.position]) || a - b;
+    const outs = [...step.transfers_out].sort(byPos);
+    const ins = [...step.transfers_in].sort(byPos);
     const moves = outs.length
       ? outs.map((o, i) => el("div", { class: "move" },
           el("span", { class: "tag out", text: "OUT" }), state.byId.get(o)?.name ?? o, el("span", { class: "arrow", text: "→" }),
@@ -144,6 +146,52 @@ function renderPlan() {
       el("div", {}, el("div", { class: "chip-reason", text: e.reason }), el("div", { class: "gainbar" }, el("span", { style: `width:${Math.max(0, (e.gain / maxGain) * 100)}%` }))),
       el("span", { class: `pill ${e.triggered ? "use" : "hold"}`, text: e.triggered ? "Use" : "Hold" })));
   }
+}
+
+// ---------------------------------------------------------------- autopilot (Phase 5/6)
+function renderAutopilot() {
+  const box = $("autopilot");
+  box.replaceChildren();
+  const c = state.data.control;
+  if (!c) { box.append(el("div", { class: "empty", text: "Set FPL_TEAM_ID to enable autopilot." })); return; }
+  const on = c.config.auto_execute_enabled;
+  const auth = c.auth || {};
+  const authPill = !auth.has_tokens ? el("span", { class: "pill off", text: "no tokens" })
+    : auth.auth_last_check_ok === false ? el("span", { class: "pill bad", text: "failing", title: auth.auth_last_error || "" })
+    : auth.auth_last_check_ok ? el("span", { class: "pill use", text: "ok" }) : el("span", { class: "pill warn", text: "unchecked" });
+  const steps = el("div", { class: "steps" }, [["dry_run", "T−24h"], ["final_lock", "T−30m"], ["commit", "T−15m"]].map(([k, label]) => {
+    const a = c.deadline_actions[k];
+    const cls = !a ? "off" : a.status === "SUCCESS" ? "use" : a.status === "SKIPPED" ? "warn" : a.status === "RUNNING" ? "warn" : "bad";
+    return el("span", { class: `pill ${cls}`, title: a ? a.status : "pending", text: label });
+  }));
+  const last = c.last_execution;
+  $("auto-meta").textContent = `max ${c.config.max_hits_per_gw} hit/GW · chips ${c.config.chip_aggression_profile.toLowerCase()}`;
+  box.append(
+    el("div", { class: "ap-row" }, el("span", { class: "k", text: "Auto-execute" }), el("span", { class: `pill ${on ? "use" : "off"}`, text: on ? "ON" : "OFF" })),
+    el("div", { class: "ap-row" }, el("span", { class: "k", text: "FPL login" }), authPill),
+    el("div", { class: "ap-row" }, el("span", { class: "k", text: "Deadline actions" }), steps),
+    el("div", { class: "ap-row" }, el("span", { class: "k", text: "Last execution" }),
+      el("span", { class: "v", text: last ? `GW${last.gameweek} ${last.execution_type.replace("_", " ").toLowerCase()} · ${last.status.toLowerCase()}` : "none" })),
+    el("div", { class: "ap-actions" },
+      on ? el("button", { class: "btn danger", type: "button", onclick: () => setAuto(false), text: "Kill switch" })
+         : el("button", { class: "btn", type: "button", onclick: () => setAuto(true), disabled: !(auth.has_tokens && auth.auth_last_check_ok), text: "Enable auto-execute",
+               title: auth.has_tokens && auth.auth_last_check_ok ? null : "FPL login must pass a live check first" })));
+}
+
+async function setAuto(enabled) {
+  let token = null;
+  try { token = sessionStorage.getItem("fplApiToken"); } catch (_) { /* storage unavailable */ }
+  if (!token) token = window.prompt("API token (FPL_API_TOKEN):");
+  if (!token) return;
+  const res = await fetch(`/api/v1/config/${state.data.team.entry_id}`, {
+    method: "PATCH", headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
+    body: JSON.stringify({ auto_execute_enabled: enabled }),
+  });
+  if (res.status === 401) { try { sessionStorage.removeItem("fplApiToken"); } catch (_) { /* ignore */ } banner("error", "Wrong API token."); return; }
+  if (!res.ok) { const b = await res.json().catch(() => ({})); banner("error", b.detail || `HTTP ${res.status}`); return; }
+  try { sessionStorage.setItem("fplApiToken", token); } catch (_) { /* ignore */ }
+  banner("ok", enabled ? "Auto-execute enabled. Guardrails still apply." : "Kill switch engaged: auto-execute is off.");
+  await load();
 }
 
 // ---------------------------------------------------------------- projections table

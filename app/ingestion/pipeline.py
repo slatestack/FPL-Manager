@@ -169,8 +169,19 @@ async def ingest_player_histories(
 
 async def ingest_entry(pool: asyncpg.Pool, fpl: FPLClient, team_id: int) -> JobResult:
     entry = schemas.EntryProfile.model_validate(await fpl.entry(team_id))
+    history = await fpl.entry_history(team_id)
+    hist_rows = [
+        {
+            "entry_id": team_id, "gameweek": int(h["event"]), "points": int(h["points"]),
+            "total_points": h.get("total_points"), "overall_rank": h.get("overall_rank"), "bank": h.get("bank"),
+            "value": h.get("value"), "event_transfers": h.get("event_transfers"),
+            "event_transfers_cost": h.get("event_transfers_cost"), "points_on_bench": h.get("points_on_bench"),
+        }
+        for h in history.get("current", [])
+    ]
     async with pool.acquire() as conn:
         n = await upsert_rows(conn, "manager_entries", [transform.entry_row(entry)], ["entry_id"])
+        n += await upsert_rows(conn, "manager_history", hist_rows, ["entry_id", "gameweek"])
     return JobResult(rows_written=n, details={"entry_id": entry.id, "current_event": entry.current_event})
 
 

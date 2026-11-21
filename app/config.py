@@ -48,6 +48,23 @@ class Settings(BaseSettings):
     # Only fetch element-summary for players who have played this season
     history_only_with_minutes: bool = True
 
+    # Phase 5: authenticated execution
+    secret_key: str | None = None            # Fernet key encrypting the stored FPL tokens
+    oidc_token_url: str = "https://account.premierleague.com/as/token"
+    oidc_client_id: str = "bfcbaf69-aade-4c1b-8f00-c1cb8a193030"   # FPL web app's public client
+    commit_minutes_before: int = 15          # T-15m autonomous commit
+    final_lock_minutes_before: int = 30      # T-30m final data lock + re-optimise
+    dry_run_hours_before: int = 24           # T-24h dry run + summary
+    commit_cutoff_minutes: int = 3           # never start a commit closer than this to the deadline
+    plan_max_age_minutes: int = 45           # a commit needs a plan at least this fresh
+    keepalive_hours: int = 4
+
+    # Phase 6: control plane + notifications
+    api_token: str | None = None             # required for mutating control-plane endpoints
+    telegram_bot_token: str | None = None
+    telegram_chat_id: str | None = None
+    alert_webhook_url: str | None = None
+
     # Ingestion lock (Redis) - must outlive the longest ingestion job
     ingest_lock_timeout_seconds: int = 900
 

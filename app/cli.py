@@ -7,7 +7,10 @@
     python -m app predict                 # xP for the next 5 gameweeks -> player_predictions
     python -m app backtest --season 2025-26
     python -m app optimize [--refresh]    # MILP plan for your team (dry run, nothing is submitted)
-    python -m app poll                    # long-running deadline-aware worker (ingestion + xP)
+    python -m app auth keygen|set|status|refresh   # FPL token vault (Phase 5)
+    python -m app config --auto-execute on|off [--max-hits N] [--aggression BALANCED]
+    python -m app execute [--ignore-kill-switch]    # commit the latest plan now (guardrails apply)
+    python -m app poll                    # worker: ingestion, xP, deadline actions, Telegram bot
 """
 
 from __future__ import annotations
@@ -159,8 +162,13 @@ def format_plan(result) -> str:
     lines += [f"  warning: {w}" for w in st.warnings]
     lines.append("")
     for g in plan.gameweeks:
-        moves = ", ".join(f"{n[o]['name']} -> {n[i]['name']}" for o, i in zip(
-            sorted(g.transfers_out, key=lambda p: n[p]['position']), sorted(g.transfers_in, key=lambda p: n[p]['position']))) or "no transfers"
+        from app.executor.payloads import pair_transfers
+
+        try:
+            pairs = pair_transfers(g.transfers_out, g.transfers_in, {p: n[p]["position"] for p in n})
+        except ValueError:
+            pairs = list(zip(g.transfers_out, g.transfers_in))
+        moves = ", ".join(f"{n[o]['name']} -> {n[i]['name']}" for o, i in pairs) or "no transfers"
         hit = f", -{g.hits * 4} hit" if g.hits else ""
         chip = f" [{g.chip}]" if g.chip else ""
         lines.append(f"GW{g.gameweek}{chip}: {moves}{hit} | FT {g.free_transfers} | captain {n[g.captain]['name']} | xP {g.xp:.1f}")
@@ -214,24 +222,136 @@ async def _optimize_job(pool, fpl, team_id: int, free_transfers: int | None) -> 
 
 
 async def _poll(settings: Settings) -> int:
+    from app.executor.service import Executor
+    from app.notify import TelegramNotifier, build_notifier
+    from app.notify.telegram_bot import TelegramBot
+    from app.scheduler import DeadlineScheduler
+
     pool = await create_pool(settings.database_url)
     redis = Redis.from_url(settings.redis_url)
+    stop = asyncio.Event()
     try:
         async with AsyncExitStack() as stack:
             fpl, xg, odds = await build_sources(settings, stack)
             archive = await build_archive(settings, stack)
-            worker = IngestionWorker(settings, pool, redis, fpl, xg_adapter=xg, odds_adapter=odds, archive_adapter=archive)
+            notifier = build_notifier(settings)
+            executor = Executor(settings, pool, redis, notifier) if settings.secret_key else None
+            scheduler = DeadlineScheduler(settings, pool, notifier, executor=executor) if settings.team_id else None
+            worker = IngestionWorker(settings, pool, redis, fpl, xg_adapter=xg, odds_adapter=odds, archive_adapter=archive,
+                                     scheduler=scheduler, executor=executor)
             loop = asyncio.get_running_loop()
             for sig in (signal.SIGINT, signal.SIGTERM):
                 try:
-                    loop.add_signal_handler(sig, worker.stop)
+                    loop.add_signal_handler(sig, lambda: (worker.stop(), stop.set()))
                 except NotImplementedError:  # pragma: no cover - Windows
                     pass
-            await worker.run_forever()
+            tasks = [asyncio.create_task(worker.run_forever())]
+            if settings.telegram_bot_token and settings.telegram_chat_id and settings.team_id:
+                bot = TelegramBot(settings, pool, redis, TelegramNotifier(settings.telegram_bot_token, settings.telegram_chat_id))
+                tasks.append(asyncio.create_task(bot.run_forever(stop)))
+            await asyncio.gather(*tasks)
     finally:
         await redis.aclose()
         await pool.close()
     return 0
+
+
+async def _auth(settings: Settings, action: str) -> int:
+    import getpass
+
+    from app.executor.vault import AuthError, TokenVault, parse_token_input
+
+    if action == "keygen":
+        print(TokenVault.generate_key())
+        print("Put this in .env as FPL_SECRET_KEY=... and keep it secret.", file=sys.stderr)
+        return 0
+    if not settings.team_id:
+        log.error("set FPL_TEAM_ID first")
+        return 2
+    pool = await create_pool(settings.database_url)
+    try:
+        vault = TokenVault(settings, pool)
+        if action == "set":
+            print("Paste the value of the localStorage key starting with 'oidc.user:https://account.premierleague.com'",
+                  "from fantasy.premierleague.com (DevTools > Application > Local Storage), then press Enter.", file=sys.stderr)
+            raw = sys.stdin.readline() if not sys.stdin.isatty() else getpass.getpass("tokens (hidden): ")
+            tokens = parse_token_input(raw)
+            await vault.store(settings.team_id, tokens)
+            print(f"stored; access token valid until {tokens.expires_at}; refresh token {'present' if tokens.refresh_token else 'MISSING'}")
+            action = "status"
+        if action == "refresh":
+            tokens = await vault.load(settings.team_id)
+            if tokens is None:
+                raise AuthError("no tokens stored")
+            tokens = await vault.refresh(settings.team_id, tokens)
+            print(f"refreshed; valid until {tokens.expires_at}")
+            return 0
+        from app.executor.service import Executor
+        from app.notify import LogNotifier
+
+        redis = Redis.from_url(settings.redis_url)
+        try:
+            ok = await Executor(settings, pool, redis, LogNotifier()).keepalive(settings.team_id)
+        finally:
+            await redis.aclose()
+        h = await vault.health(settings.team_id)
+        print(f"login {'OK' if ok else 'FAILING'}; tokens stored: {h.get('has_tokens')}; expires {h.get('auth_expires_at')}"
+              + (f"; error: {h.get('auth_last_error')}" if not ok else ""))
+        return 0 if ok else 1
+    except AuthError as exc:
+        log.error("%s", exc)
+        return 1
+    finally:
+        await pool.close()
+
+
+async def _config(settings: Settings, auto: str | None, max_hits: int | None, aggression: str | None) -> int:
+    if not settings.team_id:
+        log.error("set FPL_TEAM_ID first")
+        return 2
+    pool = await create_pool(settings.database_url)
+    try:
+        await pool.execute("INSERT INTO system_config (team_id, auto_execute_enabled) VALUES ($1, FALSE) ON CONFLICT DO NOTHING",
+                           settings.team_id)
+        if auto is not None:
+            if auto == "on" and not await pool.fetchval(
+                    "SELECT encrypted_auth_cookie IS NOT NULL AND auth_last_check_ok IS TRUE FROM system_config WHERE team_id=$1",
+                    settings.team_id):
+                log.error("FPL login must pass a live check first (`python -m app auth set`, then `auth status`)")
+                return 1
+            await pool.execute("UPDATE system_config SET auto_execute_enabled=$2, updated_at=NOW() WHERE team_id=$1",
+                               settings.team_id, auto == "on")
+        if max_hits is not None:
+            await pool.execute("UPDATE system_config SET max_hits_per_gw=$2 WHERE team_id=$1", settings.team_id, max_hits)
+        if aggression is not None:
+            await pool.execute("UPDATE system_config SET chip_aggression_profile=$2 WHERE team_id=$1", settings.team_id, aggression)
+        row = await pool.fetchrow("SELECT auto_execute_enabled, max_hits_per_gw, chip_aggression_profile FROM system_config WHERE team_id=$1",
+                                  settings.team_id)
+        print(f"auto-execute {'ON' if row[0] else 'OFF'}; max hits per GW {row[1]}; chip profile {row[2]}")
+    finally:
+        await pool.close()
+    return 0
+
+
+async def _execute(settings: Settings, ignore_kill_switch: bool) -> int:
+    from app.executor.service import Executor
+    from app.notify import build_notifier
+
+    if not settings.team_id:
+        log.error("set FPL_TEAM_ID first")
+        return 2
+    pool = await create_pool(settings.database_url)
+    redis = Redis.from_url(settings.redis_url)
+    try:
+        result = await Executor(settings, pool, redis, build_notifier(settings)).commit(
+            settings.team_id, trigger="manual", respect_kill_switch=not ignore_kill_switch)
+        print(f"{result.status}: {result.reason}")
+        for c in result.report:
+            print(f"  [{'ok' if c['ok'] else 'FAIL'}] {c['name']}: {c['detail']}")
+        return 0 if result.status == "SUCCESS" else 1
+    finally:
+        await redis.aclose()
+        await pool.close()
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -248,6 +368,14 @@ def main(argv: list[str] | None = None) -> int:
     bt.add_argument("--from-gw", type=int, default=6)
     bt.add_argument("--to-gw", type=int, default=38)
     bt.add_argument("--save", action="store_true", help="store metrics in model_backtests")
+    au = sub.add_parser("auth", help="manage the FPL token vault")
+    au.add_argument("action", choices=("keygen", "set", "status", "refresh"))
+    cf = sub.add_parser("config", help="kill switch and execution settings")
+    cf.add_argument("--auto-execute", choices=("on", "off"))
+    cf.add_argument("--max-hits", type=int)
+    cf.add_argument("--aggression", choices=("CONSERVATIVE", "BALANCED", "AGGRESSIVE"))
+    ex = sub.add_parser("execute", help="commit the latest plan to FPL now (guardrails apply)")
+    ex.add_argument("--ignore-kill-switch", action="store_true", help="manual override of auto_execute_enabled only")
     op = sub.add_parser("optimize", help="plan transfers, lineup, captaincy and chips for FPL_TEAM_ID (dry run)")
     op.add_argument("--refresh", action="store_true", help="re-ingest FPL data and odds and recompute xP first")
     op.add_argument("--free-transfers", type=int, default=None, help="override the reconstructed free transfer count")
@@ -261,6 +389,12 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "ingest":
         return asyncio.run(_ingest(settings, args.job))
+    if args.command == "auth":
+        return asyncio.run(_auth(settings, args.action))
+    if args.command == "config":
+        return asyncio.run(_config(settings, args.auto_execute, args.max_hits, args.aggression))
+    if args.command == "execute":
+        return asyncio.run(_execute(settings, args.ignore_kill_switch))
     if args.command == "optimize":
         return asyncio.run(_optimize(settings, args.refresh, args.free_transfers))
     if args.command == "predict":

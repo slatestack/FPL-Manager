@@ -8,8 +8,8 @@ Autonomous Fantasy Premier League manager, built in phases from the system archi
 | 2 | Ingestion & feature pipeline: FPL fetchers, xG + odds enrichment adapters, deadline-aware polling | ✅ |
 | 3 | xP prediction model (Section 5), validated by walk-forward backtest | ✅ |
 | 4 | MILP squad, transfer, lineup, captaincy and chip optimiser (Section 6) | ✅ |
-| 5 | Authenticated executor & guardrails | — |
-| 6 | Scheduler, control-plane API, alerts | — |
+| 5 | Authenticated executor, token vault, guardrails, post-commit verification (Section 7) | ✅ |
+| 6 | Deadline scheduler, Telegram alerts + kill switch, control-plane API, dashboard (Sections 7.2, 9) | ✅ |
 
 ## Layout
 
@@ -48,7 +48,15 @@ app/
     service.py         run -> optimization_runs + execution_logs (DRY_RUN)
   api/main.py          FastAPI: dashboard + health, ingestion status, predictions, optimize dry-run/latest
   api/static/          the web dashboard (served at /)
-  executor/            placeholder for phase 5
+  executor/
+    vault.py           encrypted FPL token store + OIDC refresh (no password ever handled)
+    client.py          authenticated my-team / transfers / lineup calls (writes never blindly retried)
+    payloads.py        plan -> FPL request bodies
+    guardrails.py      Section 7.3 circuit breakers (+ deadline, freshness, squad parity, live FT checks)
+    service.py         commit pipeline (lock, guardrails, POSTs, verification) and keep-alive
+  scheduler.py         T-24h dry run, T-30m final lock, T-15m commit (once per gameweek)
+  notify/              Telegram / webhook alerts; telegram_bot.py handles /killswitch etc.
+  ops.py               shared refresh / predict / optimise / summary operations
 migrations/            0001 = Section 8 DDL verbatim, 0002 = ingestion, 0003 = archive + predictions, 0004 = optimiser runs
 ```
 
@@ -181,6 +189,72 @@ submitted to FPL; execution is Phase 5.
 A run solves 5 MILPs (plan, do-nothing baseline, three chips): about 25–45 seconds in total.
 CBC, SCIP and HiGHS reach the identical optimum on live data.
 
+## Autonomous execution (Phase 5)
+
+Execution is **off by default**. A fresh install never touches your team until you arm it, and arming
+requires an FPL login that has passed a live check.
+
+FPL signs in through an OAuth/OIDC flow with bot protection, so the system never sees your
+password. It uses the token pair your logged-in browser already holds and renews it itself.
+
+1. **Encryption key:** `python -m app auth keygen`, then put the output in `.env` as `FPL_SECRET_KEY`.
+2. **Import tokens:** log in at fantasy.premierleague.com. Open DevTools → Application → Local
+   Storage → `https://fantasy.premierleague.com` and copy the value of the key starting with
+   `oidc.user:https://account.premierleague.com`. Then run `python -m app auth set` and paste it
+   (input is hidden). Tokens are stored encrypted, and `auth status` checks them against FPL.
+3. **Arm:** `python -m app config --auto-execute on`. Alternatives: `/enable` in Telegram, or the
+   dashboard. Disarm with `--auto-execute off`, `/killswitch`, the Telegram button or the dashboard.
+
+What a commit does: it takes a per-gameweek Redis lock and loads the latest plan, then runs the
+guardrails on live data. Transfers go first (`POST transfers/`), then lineup, captaincy and chip
+(`POST my-team/{id}/`). Finally it re-reads `my-team` and checks that it matches the plan exactly.
+Every step is logged in `execution_logs` (`details` holds the guardrail report, request bodies and
+FPL responses).
+
+| Guardrail | Aborts when |
+| --- | --- |
+| Kill switch | `system_config.auto_execute_enabled` is false |
+| Hit cap | hits at the **live** free-transfer count exceed `max_hits_per_gw` (Wildcard/Free Hit exempt) |
+| Budget drift | live selling prices + current prices leave the bank negative |
+| Duplicate | an identical payload already succeeded for this gameweek |
+| Deadline | less than 3 minutes to the deadline, or the plan is for another gameweek |
+| Plan freshness | the plan is more than 45 minutes old |
+| Squad parity | your live squad differs from the plan's starting squad (you changed it by hand) |
+| Chip | the planned chip is not available |
+
+Writes are never blindly retried. If a POST fails ambiguously, the live state decides: a commit whose
+transfers already went through skips them on retry. Unconfirmed lineups and every abort raise an
+urgent alert. When tokens are stored, the optimiser also uses the exact `my-team` state
+(selling prices, free transfers, chip status) instead of the public reconstruction.
+
+## Scheduler, alerts and control plane (Phase 6)
+
+`python -m app poll` runs everything: ingestion, xP, a login keep-alive every 4 h, the Telegram bot
+and these deadline actions (each once per gameweek, tracked in `scheduled_actions`). The worker
+wakes up exactly at each boundary:
+
+| When | Action |
+| --- | --- |
+| T−24h | refresh data, xP, optimise; send the plan (with a kill-switch button when armed) |
+| T−30m | final data lock: latest news and odds, xP, optimise; message if the plan changed |
+| T−15m | commit if armed (guardrails apply); otherwise a reminder with the moves to make by hand |
+| missed | if the worker was down through the commit window, an urgent alert |
+
+Telegram commands (only your `FPL_TELEGRAM_CHAT_ID` is obeyed): `/status`, `/plan`, `/killswitch`,
+`/enable`, `/dryrun`, `/help`.
+
+| Method | Endpoint | Auth |
+| --- | --- | --- |
+| `GET` | `/api/v1/status/{team_id}` | — |
+| `POST` | `/api/v1/optimize/dry-run` | — |
+| `POST` | `/api/v1/execute/force` | `Authorization: Bearer $FPL_API_TOKEN` |
+| `PATCH` | `/api/v1/config/{team_id}` (kill switch, hit cap, chip profile, `auth_tokens`) | `Authorization: Bearer $FPL_API_TOKEN` |
+| `GET` | `/api/v1/audit/{team_id}` (executions with projected vs actual points) | — |
+
+Mutating endpoints are disabled entirely when `FPL_API_TOKEN` is unset. Tokens are never returned
+by any endpoint. Read endpoints expose your plan, so do not put the API on the public internet
+without a reverse proxy that adds authentication.
+
 ## Polling cadence (Section 4.2)
 
 | Window | Core poll | Odds (if key set) |
@@ -209,6 +283,9 @@ TEST_DATABASE_URL=postgresql://fpl:fpl@localhost/fpl_test TEST_REDIS_URL=redis:/
 
 ## Notes
 
+* Automating your account may conflict with FPL's terms of use, and FPL can change its login or API
+  without notice. Every failure mode aborts with an alert rather than guessing, but you remain
+  responsible for your team.
 * Model limitations: no historical injury data exists for training, so a player just back from injury can look
   less likely to start than he is until he plays again. Understat data is stored but not yet used by the model
   (FPL's own per-match xG is used instead).

@@ -76,6 +76,12 @@ def fpl_api(bootstrap_payload, fixtures_payload):
         router.get("/element-summary/5/").mock(return_value=httpx.Response(200, json=load_fixture("element_summary_5.json")))
         router.get("/element-summary/3/").mock(return_value=httpx.Response(200, json=load_fixture("element_summary_3.json")))
         router.get(url__regex=r".*/element-summary/\d+/$").mock(return_value=httpx.Response(200, json={"history": []}))
+        router.get("/entry/4242/history/").mock(return_value=httpx.Response(200, json={
+            "current": [{"event": 1, "points": 60, "total_points": 60, "overall_rank": 200000, "bank": 5, "value": 1000,
+                         "event_transfers": 0, "event_transfers_cost": 0, "points_on_bench": 4},
+                        {"event": 2, "points": 60, "total_points": 120, "overall_rank": 150000, "bank": 5, "value": 1003,
+                         "event_transfers": 1, "event_transfers_cost": 0, "points_on_bench": 2}],
+            "past": [], "chips": []}))
         router.get("/entry/4242/").mock(
             return_value=httpx.Response(
                 200,

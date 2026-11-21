@@ -244,3 +244,15 @@ td.heat { font-variant-numeric: tabular-nums; }
   input[type="search"] { width: 100%; }
   .filters { width: 100%; }
 }
+
+/* Autopilot */
+.ap-row { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 8px 0; border-top: 1px solid var(--border); font-size: 13px; }
+.ap-row:first-child { border-top: 0; }
+.ap-row .k { color: var(--muted); }
+.ap-row .v { text-align: right; overflow-wrap: anywhere; }
+.pill.off { background: var(--surface-2); color: var(--muted); }
+.pill.bad { background: var(--bad-bg); color: var(--bad); }
+.pill.warn { background: var(--warn-bg); color: var(--warn); }
+.steps { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+.ap-actions { display: flex; gap: 8px; margin-top: 12px; }
+.btn.danger { background: var(--bad); border-color: var(--bad); color: #fff; }
