@@ -111,6 +111,7 @@ late.
 | Check the FPL sign-in | `docker compose exec ingestion-worker python -m app auth status` |
 | Sign in again (every ~180 days; you get reminders) | `docker compose exec ingestion-worker python -m app auth login` |
 | See the current plan | `docker compose exec ingestion-worker python -m app optimize` |
+| Rehearse the next submission (sends nothing) | `docker compose exec ingestion-worker python -m app execute --check` |
 | Logs | `docker compose logs -f ingestion-worker` |
 | Update to a new version | `git pull` then `docker compose up -d --build` |
 | Stop everything | `docker compose down` (your data is kept) |

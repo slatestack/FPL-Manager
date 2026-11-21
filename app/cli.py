@@ -308,7 +308,8 @@ async def _auth(settings: Settings, action: str) -> int:
                 url = await start_login(settings, redis, settings.team_id)
                 print("1. Open this link and sign in to FPL as usual:\n\n" + url + "\n", file=sys.stderr)
                 print("2. You will land on fantasy.premierleague.com. Copy the full address from the address bar", file=sys.stderr)
-                print("   (it contains ?code=...) and paste it here within a few minutes:", file=sys.stderr)
+                print("   (it contains ?code=...). If the address bar no longer shows it, open your browser history", file=sys.stderr)
+                print("   (Ctrl+H) and copy the newest fantasy.premierleague.com/?code=... entry. Paste it here within a few minutes:", file=sys.stderr)
                 redirect = sys.stdin.readline()
                 tokens = await complete_login(settings, redis, vault, redirect)
             finally:
@@ -372,6 +373,38 @@ async def _config(settings: Settings, auto: str | None, max_hits: int | None, ag
     return 0
 
 
+async def _preflight(settings: Settings) -> int:
+    from app.executor.service import Executor
+    from app.notify import LogNotifier
+
+    pool = await create_pool(settings.database_url)
+    redis = Redis.from_url(settings.redis_url)
+    try:
+        r = await Executor(settings, pool, redis, LogNotifier()).preflight(settings.team_id)
+        names = {x["player_id"]: x["web_name"] for x in await pool.fetch("SELECT player_id, web_name FROM players")}
+    finally:
+        await redis.aclose()
+        await pool.close()
+    if "guardrails" not in r:
+        print(f"preflight: {r['reason']}")
+        return 1
+    print(f"Preflight for GW{r['gameweek']} (nothing is submitted):")
+    timing = {"kill_switch", "deadline", "plan_fresh"}
+    for c in r["guardrails"]:
+        mark = "ok" if c["ok"] else ("note" if c["name"] in timing else "FAIL")
+        print(f"  [{mark}] {c['name']}: {c['detail']}")
+    tr = r.get("transfers_request")
+    if tr:
+        print("  transfers request:", ", ".join(f"{names[t['element_out']]} (sell £{t['selling_price'] / 10:.1f}) -> "
+                                               f"{names[t['element_in']]} (buy £{t['purchase_price'] / 10:.1f})" for t in tr["transfers"]),
+              f"| chip {tr['chip']}")
+    pk = r["picks_request"]
+    xi = [names[p["element"]] + (" (C)" if p["is_captain"] else " (V)" if p["is_vice_captain"] else "") for p in pk["picks"][:11]]
+    print("  lineup request: XI", ", ".join(xi), "| bench", ", ".join(names[p["element"]] for p in pk["picks"][11:]), f"| chip {pk['chip']}")
+    print("RESULT:", "ready: a commit would be submitted with exactly these requests" if r["ok"] else "a commit would be BLOCKED")
+    return 0 if r["ok"] else 1
+
+
 async def _execute(settings: Settings, ignore_kill_switch: bool) -> int:
     from app.executor.service import Executor
     from app.notify import build_notifier
@@ -416,6 +449,7 @@ def main(argv: list[str] | None = None) -> int:
     cf.add_argument("--aggression", choices=("CONSERVATIVE", "BALANCED", "AGGRESSIVE"))
     ex = sub.add_parser("execute", help="commit the latest plan to FPL now (guardrails apply)")
     ex.add_argument("--ignore-kill-switch", action="store_true", help="manual override of auto_execute_enabled only")
+    ex.add_argument("--check", action="store_true", help="preflight: run every check and build the requests, submit nothing")
     op = sub.add_parser("optimize", help="plan transfers, lineup, captaincy and chips for FPL_TEAM_ID (dry run)")
     op.add_argument("--refresh", action="store_true", help="re-ingest FPL data and odds and recompute xP first")
     op.add_argument("--free-transfers", type=int, default=None, help="override the reconstructed free transfer count")
@@ -436,6 +470,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "config":
         return asyncio.run(_config(settings, args.auto_execute, args.max_hits, args.aggression))
     if args.command == "execute":
+        if args.check:
+            return asyncio.run(_preflight(settings))
         return asyncio.run(_execute(settings, args.ignore_kill_switch))
     if args.command == "optimize":
         return asyncio.run(_optimize(settings, args.refresh, args.free_transfers))

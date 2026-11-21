@@ -233,3 +233,15 @@ async def test_concurrent_commit_is_locked_out(env):
     result, _ = await run(env, fake)
     await held.release()
     assert result.status == "ABORTED" and "in progress" in result.reason and fake.calls == []
+
+
+async def test_preflight_builds_requests_without_sending_anything(env):
+    settings, pool, redis = env
+    fake = FakeFPL(START)
+    with respx.mock(assert_all_called=False) as router:
+        mount(fake, router)
+        out = await Executor(settings, pool, redis, RecordingNotifier(), clock=lambda: NOW).preflight(TEAM)
+    assert out["ok"] is True and fake.posts() == []
+    assert out["transfers_request"]["transfers"] == [{"element_in": 116, "element_out": 115, "purchase_price": 70, "selling_price": 60}]
+    assert [p["element"] for p in out["picks_request"]["picks"]][11:] == BENCH
+    assert await pool.fetchval("SELECT COUNT(*) FROM execution_logs WHERE execution_type = 'LIVE_COMMIT'") == 0

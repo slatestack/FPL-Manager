@@ -87,6 +87,53 @@ class Executor:
             log_id, status, None if status == "SUCCESS" else reason[:4000], details,
         )
 
+    async def preflight(self, team_id: int) -> dict[str, Any]:
+        """Everything a commit does except the two POSTs: live team, guardrails, exact request bodies.
+        Writes nothing to FPL and nothing to execution_logs."""
+        now = self.clock()
+        gw_row = await self.pool.fetchrow(
+            "SELECT gameweek_id, deadline_time FROM gameweeks WHERE deadline_time > $1 ORDER BY deadline_time LIMIT 1", now)
+        if gw_row is None:
+            return {"ok": False, "reason": "no upcoming deadline"}
+        gw, deadline = gw_row["gameweek_id"], gw_row["deadline_time"]
+        opt = await self.pool.fetchrow(
+            """SELECT id, created_at, plan, chip_recommended, inputs FROM optimization_runs
+               WHERE team_id = $1 AND base_gameweek = $2 ORDER BY created_at DESC LIMIT 1""", team_id, gw)
+        if opt is None:
+            return {"ok": False, "reason": f"no plan for GW{gw} yet"}
+        plan_gw, chip = opt["plan"][0], opt["chip_recommended"]
+        outs, ins = list(plan_gw["transfers_out"]), list(plan_gw["transfers_in"])
+        target_squad, start_squad = set(plan_gw["squad"]), set(opt["inputs"]["team_state"]["squad"])
+        tokens = await self.vault.valid_tokens(team_id)
+        cfg = await self.pool.fetchrow("SELECT auto_execute_enabled, max_hits_per_gw FROM system_config WHERE team_id=$1", team_id)
+        rows = await self.pool.fetch("SELECT player_id, now_cost, position FROM players")
+        now_cost = {r["player_id"]: r["now_cost"] for r in rows}
+        position = {r["player_id"]: r["position"] for r in rows}
+        async with self._client(tokens) as client:
+            live = await client.my_team(team_id)
+        already_applied = bool(outs) and live.squad == target_squad
+        report = guardrails.evaluate(
+            auto_execute_enabled=bool(cfg and cfg["auto_execute_enabled"]), respect_kill_switch=True, now=now,
+            deadline=deadline, cutoff=timedelta(minutes=self.settings.commit_cutoff_minutes),
+            plan_created_at=opt["created_at"], plan_max_age=timedelta(minutes=self.settings.plan_max_age_minutes),
+            plan_gameweek=plan_gw["gameweek"], next_gameweek=gw,
+            expected_squad=target_squad if already_applied else start_squad, live_squad=live.squad,
+            outs=[] if already_applied else outs, ins=[] if already_applied else ins, chip=chip,
+            live_free_transfers=live.free_transfers, max_hits=int(cfg["max_hits_per_gw"]) if cfg else 1,
+            live_bank=live.bank, live_selling={p.element: p.selling_price for p in live.picks}, now_cost=now_cost,
+            duplicate_success=False, chip_status=live.chip_status(chip) if chip else None,
+        )
+        out: dict[str, Any] = {"gameweek": gw, "deadline": deadline, "guardrails": report.as_list(),
+                               "ok": all(c.ok for c in report.checks if c.name not in ("kill_switch", "deadline", "plan_fresh"))}
+        if (outs and not already_applied) or chip in TRANSFER_CHIPS:
+            out["transfers_request"] = transfers_payload(
+                entry=team_id, event=gw, outs=outs, ins=ins, chip=chip, position=position,
+                selling_price={p.element: p.selling_price for p in live.picks}, now_cost=now_cost)
+        out["picks_request"] = picks_payload(starting_xi=plan_gw["starting_xi"], bench=plan_gw["bench"],
+                                             captain=plan_gw["captain"], vice_captain=plan_gw["vice_captain"], chip=chip,
+                                             position=position)
+        return out
+
     async def commit(self, team_id: int, *, trigger: str = "scheduled", respect_kill_switch: bool = True) -> CommitResult:
         now = self.clock()
         gw_row = await self.pool.fetchrow(
