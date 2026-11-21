@@ -46,10 +46,25 @@ app/
     chips.py           Section 6.4 counterfactual solves and trigger rules
     validate.py        independent rule check of every plan before it is stored
     service.py         run -> optimization_runs + execution_logs (DRY_RUN)
-  api/main.py          FastAPI: health, ingestion status, predictions, optimize dry-run/latest
+  api/main.py          FastAPI: dashboard + health, ingestion status, predictions, optimize dry-run/latest
+  api/static/          the web dashboard (served at /)
   executor/            placeholder for phase 5
 migrations/            0001 = Section 8 DDL verbatim, 0002 = ingestion, 0003 = archive + predictions, 0004 = optimiser runs
 ```
+
+## Dashboard
+
+Open `http://localhost:8000/` (the `api` service in Docker Compose, or `uvicorn app.api.main:app`). It shows:
+- the next deadline with a live countdown
+- your planned GW lineup on a pitch, with new signings, captaincy and bench order
+- the five-week transfer plan
+- the chip analysis
+- a sortable, filterable table of every player's projections and fixtures
+- the status of each pipeline job
+
+**Run dry-run** re-solves the plan on the latest projections. Nothing is ever submitted to FPL
+from the dashboard. It is plain HTML/CSS/JS served by FastAPI, with no build step or external
+assets, and supports dark mode and phones.
 
 ## Running
 
