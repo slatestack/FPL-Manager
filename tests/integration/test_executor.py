@@ -107,7 +107,8 @@ async def env(pool, fpl):
     settings = Settings(database_url="", api_base_url="https://fpl.test/api", team_id=TEAM, secret_key=Fernet.generate_key().decode(),
                         http_max_retries=0)
     vault = TokenVault(settings, pool)
-    await vault.store(TEAM, AuthTokens("AT1", "RT1", NOW + timedelta(hours=1)))
+    # Far-future expiry: the vault checks expiry against the real clock, so a fixed date would rot.
+    await vault.store(TEAM, AuthTokens("AT1", "RT1", datetime(2100, 1, 1, tzinfo=timezone.utc)))
     await pool.execute("UPDATE system_config SET auto_execute_enabled = TRUE WHERE team_id = $1", TEAM)
     redis = Redis.from_url(os.environ["TEST_REDIS_URL"])
     await redis.flushdb()

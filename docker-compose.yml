@@ -43,6 +43,7 @@ services:
     env_file: [{path: .env, required: false}]
     environment: *db_env
     restart: unless-stopped
+    stop_grace_period: 2m     # a stop never cuts off a commit to FPL that is already under way
     depends_on:
       migrate: {condition: service_completed_successfully}
       redis: {condition: service_healthy}

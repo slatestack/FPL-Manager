@@ -33,6 +33,7 @@ class DeadlineScheduler:
     ):
         self.settings, self.pool, self.notifier, self.executor = settings, pool, notifier, executor
         self.team_id = settings.team_id
+        self.committing = False  # read by the worker: never interrupt a commit on shutdown
         self._refresh = refresh or (lambda: ops.refresh_data(pool, settings))
         self._predict = predict or (lambda: ops.predict(pool))
         self._optimize = optimize or (lambda: ops.optimize(pool, settings, self.team_id))
@@ -144,6 +145,10 @@ class DeadlineScheduler:
             await self._done(gw, "commit", "FAILED", {"reason": "executor not configured (FPL_SECRET_KEY missing?)"})
             await self.notifier.send(f"GW{gw}: auto-execute is on but the executor is not configured.", urgent=True)
             return
-        result = await self.executor.commit(self.team_id, trigger="scheduled")
+        self.committing = True
+        try:
+            result = await self.executor.commit(self.team_id, trigger="scheduled")
+        finally:
+            self.committing = False
         await self._done(gw, "commit", "SUCCESS" if result.status == "SUCCESS" else "FAILED",
                          {"status": result.status, "reason": result.reason, "execution_log_id": result.execution_log_id})

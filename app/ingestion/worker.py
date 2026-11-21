@@ -219,10 +219,33 @@ class IngestionWorker:
         self._stop.set()
 
     async def run_forever(self) -> None:
+        """Tick, sleep, repeat. A stop request interrupts a data-refresh tick at once, but never a
+        commit to FPL in progress: that one is allowed to finish so the team is never half-updated."""
         while not self._stop.is_set():
-            delay = await self.tick()
+            tick = asyncio.create_task(self.tick())
+            stopper = asyncio.create_task(self._stop.wait())
+            await asyncio.wait({tick, stopper}, return_when=asyncio.FIRST_COMPLETED)
+            stopper.cancel()
+            if not tick.done():
+                if self.scheduler is not None and getattr(self.scheduler, "committing", False):
+                    log.info("stop requested during a commit; letting it finish")
+                    await tick
+                else:
+                    log.info("stop requested; cancelling the current cycle")
+                    tick.cancel()
+                    try:
+                        await tick
+                    except asyncio.CancelledError:
+                        pass
+                break
+            try:
+                delay = tick.result()
+            except Exception:
+                log.exception("worker cycle failed")
+                delay = timedelta(minutes=5)
             log.info("sleeping %s", delay)
             try:
                 await asyncio.wait_for(self._stop.wait(), timeout=delay.total_seconds())
             except TimeoutError:
                 pass
+        log.info("worker stopped")

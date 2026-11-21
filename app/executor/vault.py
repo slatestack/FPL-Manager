@@ -126,7 +126,7 @@ class TokenVault:
 
     async def refresh(self, team_id: int, tokens: AuthTokens) -> AuthTokens:
         if not tokens.refresh_token:
-            raise AuthError("access token expired and no refresh token is stored; re-import tokens")
+            raise AuthError("access token expired and no refresh token is stored; sign in again (`python -m app auth login`)")
         async with httpx.AsyncClient(timeout=20, transport=self._transport) as client:
             resp = await client.post(
                 self.settings.oidc_token_url,
@@ -134,9 +134,12 @@ class TokenVault:
                 headers={"Accept": "application/json"},
             )
         if resp.status_code != 200:
-            raise AuthError(f"token refresh rejected (HTTP {resp.status_code}); re-import tokens")
-        d = resp.json()
-        access = d["access_token"]
+            raise AuthError(f"token refresh rejected (HTTP {resp.status_code}); sign in again")
+        try:
+            d = resp.json()
+            access = d["access_token"]
+        except (ValueError, KeyError, TypeError) as exc:
+            raise AuthError("token refresh failed: FPL's sign-in server sent an unexpected response; sign in again") from exc
         expires = datetime.now(timezone.utc) + timedelta(seconds=int(d["expires_in"])) if d.get("expires_in") else _jwt_exp(access)
         fresh = AuthTokens(access, d.get("refresh_token") or tokens.refresh_token, expires, tokens.cookie)
         await self.store(team_id, fresh)
