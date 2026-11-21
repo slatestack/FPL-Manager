@@ -7,6 +7,9 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Query, Response
+from pydantic import BaseModel
+
+from app.ingestion.fpl_client import FPLClient
 from redis.asyncio import Redis
 
 from app.config import get_settings
@@ -84,3 +87,50 @@ async def latest_predictions(
         run["run_timestamp"], gw, position, limit,
     )
     return {"run": dict(run), "gameweek": gw, "players": [dict(r) for r in rows]}
+
+
+class DryRunRequest(BaseModel):
+    team_id: int | None = None
+    free_transfers: int | None = None
+
+
+@app.post("/api/v1/optimize/dry-run")
+async def optimize_dry_run(req: DryRunRequest) -> dict[str, object]:
+    """Section 9: run the MILP now against the latest xP; nothing is submitted to FPL."""
+    from app.optimizer.service import run_optimization
+
+    settings = get_settings()
+    team_id = req.team_id or settings.team_id
+    if not team_id:
+        raise HTTPException(400, "team_id required (or set FPL_TEAM_ID)")
+    async with FPLClient(settings) as fpl:
+        r = await run_optimization(app.state.pool, fpl, team_id, free_transfers=req.free_transfers)
+    return await _optimization_view(r.run_id)
+
+
+@app.get("/api/v1/optimize/latest")
+async def optimize_latest(team_id: int | None = None) -> dict[str, object]:
+    team_id = team_id or get_settings().team_id
+    run_id = await app.state.pool.fetchval(
+        "SELECT id FROM optimization_runs WHERE team_id = $1 ORDER BY created_at DESC LIMIT 1", team_id
+    )
+    if run_id is None:
+        raise HTTPException(404, "no optimisation runs yet")
+    return await _optimization_view(str(run_id))
+
+
+async def _optimization_view(run_id: str) -> dict[str, object]:
+    row = await app.state.pool.fetchrow("SELECT * FROM optimization_runs WHERE id = $1::uuid", run_id)
+    names = {r["player_id"]: r["web_name"] for r in await app.state.pool.fetch("SELECT player_id, web_name FROM players")}
+    plan = row["plan"]
+    for g in plan:
+        for k in ("transfers_in", "transfers_out", "starting_xi", "bench", "squad"):
+            g[f"{k}_names"] = [names.get(p) for p in g[k]]
+        g["captain_name"], g["vice_captain_name"] = names.get(g["captain"]), names.get(g["vice_captain"])
+    return {
+        "run_id": str(row["id"]), "created_at": row["created_at"], "team_id": row["team_id"],
+        "gameweek": row["base_gameweek"], "objective": float(row["objective"]),
+        "baseline_objective": float(row["baseline_objective"]), "chip_recommended": row["chip_recommended"],
+        "chip_evaluation": row["chip_evaluation"], "plan": plan, "solver": row["solver"],
+        "team_state": {k: row["inputs"]["team_state"][k] for k in ("bank", "free_transfers", "chips_available", "warnings")},
+    }

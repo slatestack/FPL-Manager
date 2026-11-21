@@ -6,6 +6,7 @@
     python -m app ingest archive          # past seasons used as model training data
     python -m app predict                 # xP for the next 5 gameweeks -> player_predictions
     python -m app backtest --season 2025-26
+    python -m app optimize [--refresh]    # MILP plan for your team (dry run, nothing is submitted)
     python -m app poll                    # long-running deadline-aware worker (ingestion + xP)
 """
 
@@ -144,6 +145,74 @@ async def _backtest(settings: Settings, season: str, first: int, last: int, save
     return 0
 
 
+def format_plan(result) -> str:
+    n = result.names
+    teams = result.team_short
+    label = lambda p: f"{n[p]['name']} ({teams.get(n[p]['team_id'], '?')} {n[p]['position']} £{n[p]['cost'] / 10:.1f})"  # noqa: E731
+    st, plan = result.state, result.plan
+    lines = [
+        f"Team {st.entry_id} | GW{plan.first.gameweek} | bank £{st.bank / 10:.1f}m | squad selling value £{st.squad_value / 10:.1f}m"
+        f" | free transfers {st.free_transfers} | chips: {', '.join(c.name for c in st.chips_available) or 'none'}",
+        f"Plan value {plan.objective:.1f} discounted xP vs {result.baseline.objective:.1f} with no transfers "
+        f"(+{plan.objective - result.baseline.objective:.1f}); solver {plan.status} in {plan.solve_seconds:.1f}s",
+    ]
+    lines += [f"  warning: {w}" for w in st.warnings]
+    lines.append("")
+    for g in plan.gameweeks:
+        moves = ", ".join(f"{n[o]['name']} -> {n[i]['name']}" for o, i in zip(
+            sorted(g.transfers_out, key=lambda p: n[p]['position']), sorted(g.transfers_in, key=lambda p: n[p]['position']))) or "no transfers"
+        hit = f", -{g.hits * 4} hit" if g.hits else ""
+        chip = f" [{g.chip}]" if g.chip else ""
+        lines.append(f"GW{g.gameweek}{chip}: {moves}{hit} | FT {g.free_transfers} | captain {n[g.captain]['name']} | xP {g.xp:.1f}")
+    g = plan.first
+    order = {"GKP": 0, "DEF": 1, "MID": 2, "FWD": 3}
+    lines += ["", f"GW{g.gameweek} lineup:"]
+    for p in sorted(g.starting_xi, key=lambda p: order[n[p]["position"]]):
+        tag = " (C)" if p == g.captain else " (V)" if p == g.vice_captain else ""
+        lines.append(f"  {label(p)}{tag}")
+    lines.append("  Bench: " + ", ".join(f"{k}. {n[p]['name']}" for k, p in enumerate(g.bench, start=1)))
+    lines += ["", "Chips:"]
+    lines += [f"  {e.chip:<9} gain {e.gain:+6.2f}  {'USE' if e.triggered else 'hold'}  ({e.reason})" for e in result.chip_evaluations]
+    if not result.chip_evaluations:
+        lines.append("  none available")
+    lines.append(f"\nLogged as optimization run {result.run_id} (execution_logs DRY_RUN {result.execution_log_id}).")
+    return "\n".join(lines)
+
+
+async def _optimize(settings: Settings, refresh: bool, free_transfers: int | None) -> int:
+    from app.optimizer.service import run_optimization
+
+    if not settings.team_id:
+        log.error("set FPL_TEAM_ID to your FPL team id")
+        return 2
+    pool = await create_pool(settings.database_url)
+    try:
+        if refresh:
+            async with AsyncExitStack() as stack:
+                fpl, _, odds = await build_sources(settings, stack)
+                await pipeline.run_job(pool, "core", lambda: pipeline.ingest_core(pool, fpl))
+                if odds is not None:
+                    await pipeline.run_job(pool, "odds", lambda: pipeline.ingest_odds(pool, odds))
+            await pipeline.run_job(pool, "predict", lambda: _predict_job(pool))
+        async with AsyncExitStack() as stack:
+            fpl, _, _ = await build_sources(settings, stack)
+            result = await pipeline.run_job(pool, "optimize", lambda: _optimize_job(pool, fpl, settings.team_id, free_transfers))
+        print(format_plan(result.details["result"]))
+    finally:
+        await pool.close()
+    return 0
+
+
+async def _optimize_job(pool, fpl, team_id: int, free_transfers: int | None) -> pipeline.JobResult:
+    from app.optimizer.service import run_optimization
+
+    r = await run_optimization(pool, fpl, team_id, free_transfers=free_transfers)
+    r.team_short = {row["team_id"]: row["short_name"] for row in await pool.fetch("SELECT team_id, short_name FROM teams")}
+    job = pipeline.JobResult(rows_written=1, details={"run_id": r.run_id, "objective": round(r.plan.objective, 2)})
+    job.details["result"] = r
+    return job
+
+
 async def _poll(settings: Settings) -> int:
     pool = await create_pool(settings.database_url)
     redis = Redis.from_url(settings.redis_url)
@@ -179,6 +248,9 @@ def main(argv: list[str] | None = None) -> int:
     bt.add_argument("--from-gw", type=int, default=6)
     bt.add_argument("--to-gw", type=int, default=38)
     bt.add_argument("--save", action="store_true", help="store metrics in model_backtests")
+    op = sub.add_parser("optimize", help="plan transfers, lineup, captaincy and chips for FPL_TEAM_ID (dry run)")
+    op.add_argument("--refresh", action="store_true", help="re-ingest FPL data and odds and recompute xP first")
+    op.add_argument("--free-transfers", type=int, default=None, help="override the reconstructed free transfer count")
     args = parser.parse_args(argv)
 
     _configure_logging(args.verbose)
@@ -189,6 +261,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "ingest":
         return asyncio.run(_ingest(settings, args.job))
+    if args.command == "optimize":
+        return asyncio.run(_optimize(settings, args.refresh, args.free_transfers))
     if args.command == "predict":
         return asyncio.run(_predict(settings))
     if args.command == "backtest":

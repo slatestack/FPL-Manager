@@ -43,3 +43,12 @@ class FPLClient:
 
     async def entry(self, team_id: int) -> dict[str, Any]:
         return await self._http.get_json(f"entry/{int(team_id)}/")
+
+    async def entry_history(self, team_id: int) -> dict[str, Any]:
+        return await self._http.get_json(f"entry/{int(team_id)}/history/")
+
+    async def entry_transfers(self, team_id: int) -> list[dict[str, Any]]:
+        return await self._http.get_json(f"entry/{int(team_id)}/transfers/")
+
+    async def entry_picks(self, team_id: int, event: int) -> dict[str, Any]:
+        return await self._http.get_json(f"entry/{int(team_id)}/event/{int(event)}/picks/")

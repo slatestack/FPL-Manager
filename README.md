@@ -7,7 +7,7 @@ Autonomous Fantasy Premier League manager, built in phases from the system archi
 | 1 | Foundation: project layout, Docker Compose (PostgreSQL 16 + Redis), Section 8 schema | ✅ |
 | 2 | Ingestion & feature pipeline: FPL fetchers, xG + odds enrichment adapters, deadline-aware polling | ✅ |
 | 3 | xP prediction model (Section 5), validated by walk-forward backtest | ✅ |
-| 4 | MILP squad / chip optimiser | — |
+| 4 | MILP squad, transfer, lineup, captaincy and chip optimiser (Section 6) | ✅ |
 | 5 | Authenticated executor & guardrails | — |
 | 6 | Scheduler, control-plane API, alerts | — |
 
@@ -40,9 +40,15 @@ app/
     engine.py          combines everything into per-fixture and per-GW xP
     service.py         live run -> prediction_runs / player_predictions / fixture_predictions
     backtest.py        walk-forward evaluation against form baselines
-  api/main.py          FastAPI: /healthz, /api/v1/ingestion/status, /api/v1/predictions/latest
-  optimizer/ executor/ placeholders for phases 4-5
-migrations/            0001 = Section 8 DDL verbatim, 0002 = ingestion, 0003 = archive + predictions
+  optimizer/
+    team_state.py      squad, bank, real selling prices, free transfers, chips (from public endpoints)
+    model.py           multi-period MILP (OR-Tools; CBC by default, SCIP/HiGHS supported)
+    chips.py           Section 6.4 counterfactual solves and trigger rules
+    validate.py        independent rule check of every plan before it is stored
+    service.py         run -> optimization_runs + execution_logs (DRY_RUN)
+  api/main.py          FastAPI: health, ingestion status, predictions, optimize dry-run/latest
+  executor/            placeholder for phase 5
+migrations/            0001 = Section 8 DDL verbatim, 0002 = ingestion, 0003 = archive + predictions, 0004 = optimiser runs
 ```
 
 ## Running
@@ -131,6 +137,34 @@ Total predicted points are within 1.4% of actual, and P(start) is calibrated acr
 No historical injury news exists, so the backtest runs every method with availability = 1. Live
 runs also use FPL's injury flags. Results barely move when the main constants change (±0.002 RMSE),
 so the defaults are not tuned to this one season.
+
+## Optimiser (Phase 4)
+
+`python -m app optimize` (add `--refresh` to re-ingest and recompute xP first), or
+`POST /api/v1/optimize/dry-run`, plans the next 5 gameweeks for `FPL_TEAM_ID`. Nothing is
+submitted to FPL; execution is Phase 5.
+
+* **Model:** Section 6 MILP: squad, starting XI, ordered bench, captain and vice for every
+  gameweek, plus transfers in each week. Free transfers bank up to 5. The objective is
+  discounted xP (γ = 0.85) minus 4 per hit, plus small bench and vice-captain terms.
+  The spec's `min/max` rollover formula is rewritten in solver-compatible form (see
+  `model.py`). Hits are also capped at `system_config.max_hits_per_gw`, so plans never exceed
+  what the Phase 5 guardrail allows.
+* **Money:** a bank balance carried week to week, using your real selling prices (FPL keeps half
+  of a rise). Purchase prices come from your public transfer history.
+* **Team state:** free transfers are replayed from your history and cross-checked against the
+  hit points FPL actually charged. Chip windows come from `bootstrap-static`. Phase 5's
+  authenticated `my-team` call will replace these reconstructions.
+* **Chips:** each available chip is solved as a counterfactual and used only if it meets the
+  Section 6.4 thresholds, scaled by `chip_aggression_profile`. A chip in the last gameweek
+  of its window is used if it adds anything at all (configurable).
+* **Safety and audit:** every plan is re-checked by an independent validator (squad and formation rules,
+  ≤ 3 per club, budget, free-transfer rollover, hit cap) before it is stored. Each run logs inputs, parameters,
+  solver statistics, the full plan and chip analysis to `optimization_runs`, and the next-gameweek
+  decision to `execution_logs` as a `DRY_RUN` with its payload hash.
+
+A run solves 5 MILPs (plan, do-nothing baseline, three chips): about 25–45 seconds in total.
+CBC, SCIP and HiGHS reach the identical optimum on live data.
 
 ## Polling cadence (Section 4.2)
 

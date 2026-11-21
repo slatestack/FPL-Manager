@@ -54,7 +54,7 @@ async def run_job(
         run_id,
         result.rows_written,
         result.payload_hash,
-        result.details,
+        {k: v for k, v in result.details.items() if k != "result"},
     )
     log.info("job %s ok: %d rows %s", job, result.rows_written, result.details)
     return result
