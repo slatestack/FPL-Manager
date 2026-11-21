@@ -119,6 +119,13 @@ class IngestionWorker:
             details={"run_timestamp": s.run_timestamp.isoformat(), "gameweeks": s.gameweeks, "seconds": s.seconds},
         )
 
+    async def _optimize(self) -> pipeline.JobResult:
+        from app.optimizer.service import run_optimization
+
+        r = await run_optimization(self.pool, self.fpl, self.settings.team_id)
+        return pipeline.JobResult(rows_written=1, details={"run_id": r.run_id, "gameweek": r.plan.first.gameweek,
+                                                           "gain": round(r.plan.objective - r.baseline.objective, 2)})
+
     # ------------------------------------------------------------------ one tick
     async def tick(self) -> timedelta:
         """Run every due job once; return how long to sleep before the next tick."""
@@ -170,9 +177,16 @@ class IngestionWorker:
         predict_every = PREDICT_INTERVAL.get(phase)
         if self.predict_enabled and predict_every is not None and await self._due("predict", predict_every):
             try:
-                await self.run_locked("predict", self._predict)
+                predicted = await self.run_locked("predict", self._predict)
             except Exception:
+                predicted = None
                 log.exception("xP prediction failed")
+            # Keep the dashboard's plan current: re-plan on every new set of projections.
+            if predicted is not None and self.settings.team_id:
+                try:
+                    await self.run_locked("optimize", self._optimize)
+                except Exception:
+                    log.exception("re-planning failed")
 
         # Section 7.1 keep-alive: detect expired FPL credentials long before a deadline.
         if self.executor is not None and self.settings.team_id and await self._due(

@@ -166,7 +166,7 @@ function renderAutopilot() {
   }));
   const last = c.last_execution;
   $("auto-meta").textContent = `max ${c.config.max_hits_per_gw} hit/GW · chips ${c.config.chip_aggression_profile.toLowerCase()}`;
-  box.append(
+  box.append(...[
     el("div", { class: "ap-row" }, el("span", { class: "k", text: "Auto-execute" }), el("span", { class: `pill ${on ? "use" : "off"}`, text: on ? "ON" : "OFF" })),
     el("div", { class: "ap-row" }, el("span", { class: "k", text: "FPL login" }), authPill),
     auth.session_expires_at ? el("div", { class: "ap-row" }, el("span", { class: "k", text: "Sign in again by" }),
@@ -177,7 +177,8 @@ function renderAutopilot() {
     el("div", { class: "ap-actions" },
       on ? el("button", { class: "btn danger", type: "button", onclick: () => setAuto(false), text: "Kill switch" })
          : el("button", { class: "btn", type: "button", onclick: () => setAuto(true), disabled: !(auth.has_tokens && auth.auth_last_check_ok), text: "Enable auto-execute",
-               title: auth.has_tokens && auth.auth_last_check_ok ? null : "FPL login must pass a live check first" })));
+               title: auth.has_tokens && auth.auth_last_check_ok ? null : "FPL login must pass a live check first" })),
+  ].filter(Boolean));  // optional rows are null; Node.append would print them as the text "null"
 }
 
 async function setAuto(enabled) {
