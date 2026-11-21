@@ -38,6 +38,11 @@ class AuthTokens:
     expires_at: datetime | None
     cookie: str | None = None          # optional raw Cookie header (legacy session cookies)
 
+    @property
+    def session_expires_at(self) -> datetime | None:
+        """When re-login becomes unavoidable: the refresh token's hard expiry (FPL sessions last 180 days)."""
+        return _jwt_exp(self.refresh_token) if self.refresh_token else self.expires_at
+
     def expired(self, now: datetime | None = None, margin: timedelta = RENEW_MARGIN) -> bool:
         if self.expires_at is None:
             return False
@@ -159,4 +164,11 @@ class TokenVault:
                       auth_last_check_ok, auth_last_error FROM system_config WHERE team_id = $1""",
             team_id,
         )
-        return dict(row) if row else {"has_tokens": False}
+        out = dict(row) if row else {"has_tokens": False}
+        if out.get("has_tokens"):
+            try:
+                tokens = await self.load(team_id)
+                out["session_expires_at"] = tokens.session_expires_at if tokens else None
+            except AuthError:
+                out["session_expires_at"] = None
+        return out

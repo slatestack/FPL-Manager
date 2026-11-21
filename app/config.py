@@ -52,6 +52,10 @@ class Settings(BaseSettings):
     secret_key: str | None = None            # Fernet key encrypting the stored FPL tokens
     oidc_token_url: str = "https://account.premierleague.com/as/token"
     oidc_client_id: str = "bfcbaf69-aade-4c1b-8f00-c1cb8a193030"   # FPL web app's public client
+    oidc_authorize_url: str = "https://account.premierleague.com/as/authorize"
+    oidc_redirect_uri: str = "https://fantasy.premierleague.com/"
+    oidc_scope: str = "openid profile email offline_access p1:update:user consent interest"
+    login_reminder_days: int = 14            # warn this long before the 180-day FPL session ends
     commit_minutes_before: int = 15          # T-15m autonomous commit
     final_lock_minutes_before: int = 30      # T-30m final data lock + re-optimise
     dry_run_hours_before: int = 24           # T-24h dry run + summary

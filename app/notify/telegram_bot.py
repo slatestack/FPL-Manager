@@ -25,7 +25,8 @@ HELP = (
     "/plan – planned moves for the next 5 gameweeks\n"
     "/killswitch – disable autonomous execution immediately\n"
     "/enable – re-enable autonomous execution\n"
-    "/dryrun – refresh projections and re-plan now"
+    "/dryrun – refresh projections and re-plan now\n"
+    "/login – sign in to FPL again (needed every ~180 days)"
 )
 
 
@@ -115,6 +116,22 @@ class TelegramBot:
             task = asyncio.create_task(self._run_dry_run())
             self._tasks.add(task)
             task.add_done_callback(self._tasks.discard)
+        elif cmd == "/login":
+            from app.executor.login import complete_login, start_login
+            from app.executor.vault import AuthError, TokenVault
+
+            parts = (msg.get("text") or "").split(maxsplit=1)
+            if len(parts) == 1:
+                url = await start_login(self.settings, self.redis, self.team_id)
+                await self.reply("1) Open this link and sign in to FPL:\n" + url +
+                                 "\n2) Copy the address you land on (it contains ?code=) and send it as:\n/login <address>")
+            else:
+                try:
+                    tokens = await complete_login(self.settings, self.redis, TokenVault(self.settings, self.pool), parts[1])
+                    await self.reply(f"✅ Signed in. Session valid until {tokens.session_expires_at:%d %b %Y}; "
+                                     "the access token renews automatically.")
+                except AuthError as exc:
+                    await self.reply(f"Sign-in failed: {exc}")
         elif cmd in ("/help", "/start"):
             await self.reply(HELP)
 

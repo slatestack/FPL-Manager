@@ -261,12 +261,25 @@ async def status(team_id: int) -> dict[str, object]:
         "seconds_to_deadline": int((gw["deadline_time"] - now).total_seconds()) if gw else None,
         "config": ({k: cfg[k] for k in ("auto_execute_enabled", "max_hits_per_gw", "chip_aggression_profile")} if cfg
                    else {"auto_execute_enabled": False, "max_hits_per_gw": 1, "chip_aggression_profile": "BALANCED"}),
-        "auth": ({k: cfg[k] for k in ("has_tokens", "auth_expires_at", "auth_last_check_at", "auth_last_check_ok", "auth_last_error")}
-                 if cfg else {"has_tokens": False}),
+        "auth": (await _auth_view(team_id, cfg) if cfg else {"has_tokens": False}),
         "squad": squad,
         "last_execution": dict(last) if last else None,
         "deadline_actions": {r["action"]: {"status": r["status"], "finished_at": r["finished_at"]} for r in actions},
     }
+
+
+async def _auth_view(team_id: int, cfg) -> dict[str, object]:
+    view = {k: cfg[k] for k in ("has_tokens", "auth_expires_at", "auth_last_check_at", "auth_last_check_ok", "auth_last_error")}
+    settings = get_settings()
+    if cfg["has_tokens"] and settings.secret_key:
+        from app.executor.vault import AuthError, TokenVault
+
+        try:
+            tokens = await TokenVault(settings, app.state.pool).load(team_id)
+            view["session_expires_at"] = tokens.session_expires_at if tokens else None
+        except AuthError:
+            view["session_expires_at"] = None
+    return view
 
 
 class ConfigPatch(BaseModel):

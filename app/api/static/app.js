@@ -169,6 +169,8 @@ function renderAutopilot() {
   box.append(
     el("div", { class: "ap-row" }, el("span", { class: "k", text: "Auto-execute" }), el("span", { class: `pill ${on ? "use" : "off"}`, text: on ? "ON" : "OFF" })),
     el("div", { class: "ap-row" }, el("span", { class: "k", text: "FPL login" }), authPill),
+    auth.session_expires_at ? el("div", { class: "ap-row" }, el("span", { class: "k", text: "Sign in again by" }),
+      el("span", { class: "v", text: new Date(auth.session_expires_at).toLocaleDateString([], { day: "numeric", month: "short", year: "numeric" }) })) : null,
     el("div", { class: "ap-row" }, el("span", { class: "k", text: "Deadline actions" }), steps),
     el("div", { class: "ap-row" }, el("span", { class: "k", text: "Last execution" }),
       el("span", { class: "v", text: last ? `GW${last.gameweek} ${last.execution_type.replace("_", " ").toLowerCase()} · ${last.status.toLowerCase()}` : "none" })),

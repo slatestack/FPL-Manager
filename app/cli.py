@@ -7,7 +7,7 @@
     python -m app predict                 # xP for the next 5 gameweeks -> player_predictions
     python -m app backtest --season 2025-26
     python -m app optimize [--refresh]    # MILP plan for your team (dry run, nothing is submitted)
-    python -m app auth keygen|set|status|refresh   # FPL token vault (Phase 5)
+    python -m app auth keygen|login|status|refresh|set   # FPL sign-in + token vault (Phase 5)
     python -m app config --auto-execute on|off [--max-hits N] [--aggression BALANCED]
     python -m app execute [--ignore-kill-switch]    # commit the latest plan now (guardrails apply)
     python -m app poll                    # worker: ingestion, xP, deadline actions, Telegram bot
@@ -279,6 +279,21 @@ async def _auth(settings: Settings, action: str) -> int:
             await vault.store(settings.team_id, tokens)
             print(f"stored; access token valid until {tokens.expires_at}; refresh token {'present' if tokens.refresh_token else 'MISSING'}")
             action = "status"
+        if action == "login":
+            from app.executor.login import complete_login, start_login
+
+            redis = Redis.from_url(settings.redis_url)
+            try:
+                url = await start_login(settings, redis, settings.team_id)
+                print("1. Open this link and sign in to FPL as usual:\n\n" + url + "\n", file=sys.stderr)
+                print("2. You will land on fantasy.premierleague.com. Copy the full address from the address bar", file=sys.stderr)
+                print("   (it contains ?code=...) and paste it here within a few minutes:", file=sys.stderr)
+                redirect = sys.stdin.readline()
+                tokens = await complete_login(settings, redis, vault, redirect)
+            finally:
+                await redis.aclose()
+            print(f"signed in; session valid until {tokens.session_expires_at:%d %b %Y}; access token renews automatically")
+            action = "status"
         if action == "refresh":
             tokens = await vault.load(settings.team_id)
             if tokens is None:
@@ -295,7 +310,10 @@ async def _auth(settings: Settings, action: str) -> int:
         finally:
             await redis.aclose()
         h = await vault.health(settings.team_id)
-        print(f"login {'OK' if ok else 'FAILING'}; tokens stored: {h.get('has_tokens')}; expires {h.get('auth_expires_at')}"
+        ends = h.get("session_expires_at")
+        print(f"login {'OK' if ok else 'FAILING'}; tokens stored: {h.get('has_tokens')}; access renews automatically; "
+              f"session ends {ends:%d %b %Y} (sign in again before then)" if ok and ends else
+              f"login {'OK' if ok else 'FAILING'}; tokens stored: {h.get('has_tokens')}; expires {h.get('auth_expires_at')}"
               + (f"; error: {h.get('auth_last_error')}" if not ok else ""))
         return 0 if ok else 1
     except AuthError as exc:
@@ -369,7 +387,7 @@ def main(argv: list[str] | None = None) -> int:
     bt.add_argument("--to-gw", type=int, default=38)
     bt.add_argument("--save", action="store_true", help="store metrics in model_backtests")
     au = sub.add_parser("auth", help="manage the FPL token vault")
-    au.add_argument("action", choices=("keygen", "set", "status", "refresh"))
+    au.add_argument("action", choices=("keygen", "login", "set", "status", "refresh"))
     cf = sub.add_parser("config", help="kill switch and execution settings")
     cf.add_argument("--auto-execute", choices=("on", "off"))
     cf.add_argument("--max-hits", type=int)

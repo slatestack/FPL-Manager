@@ -230,6 +230,8 @@ class Executor:
         """Section 7.1: ping my-team (refreshing the token if due); alert once per 6h while broken."""
         try:
             tokens = await self.vault.valid_tokens(team_id)
+            if tokens.refresh_token and tokens.expires_at and tokens.expires_at - self.clock() < timedelta(minutes=30):
+                tokens = await self.vault.refresh(team_id, tokens)
             async with self._client(tokens) as client:
                 await client.my_team(team_id)
         except Exception as exc:
@@ -239,8 +241,18 @@ class Executor:
             if last is None or self.clock() - last > timedelta(hours=6):
                 await self.notifier.send(
                     f"FPL login needs attention: {exc}. Automatic execution cannot run until tokens are re-imported "
-                    "(`python -m app auth set` or PATCH /api/v1/config).", urgent=True)
+                    "(/login in Telegram or `python -m app auth login`).", urgent=True)
                 await self.pool.execute("UPDATE system_config SET last_auth_alert_at = NOW() WHERE team_id=$1", team_id)
             return False
         await self.vault.record_check(team_id, True)
+        ends = tokens.session_expires_at
+        if ends is not None and ends - self.clock() <= timedelta(days=self.settings.login_reminder_days):
+            row = await self.pool.fetchrow("SELECT last_auth_alert_at FROM system_config WHERE team_id=$1", team_id)
+            last = row["last_auth_alert_at"] if row else None
+            if last is None or self.clock() - last > timedelta(hours=24):
+                days = max(0, (ends - self.clock()).days)
+                await self.notifier.send(
+                    f"Your FPL login session ends in {days} day(s) ({ends:%d %b}). FPL limits sessions to 180 days. "
+                    "Sign in again with /login in Telegram or `python -m app auth login` (takes a minute).", urgent=days <= 3)
+                await self.pool.execute("UPDATE system_config SET last_auth_alert_at = NOW() WHERE team_id=$1", team_id)
         return True
