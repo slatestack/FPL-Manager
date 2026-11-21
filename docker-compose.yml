@@ -1,27 +1,33 @@
+# Runs the whole system on one computer. Everything restarts on its own after a reboot or crash
+# (as long as Docker itself starts with the computer). Nothing is reachable from other machines:
+# the database and Redis have no published ports and the dashboard listens on 127.0.0.1 only.
 services:
   postgres:
     image: postgres:16
+    restart: unless-stopped
     environment:
       POSTGRES_USER: fpl
       POSTGRES_PASSWORD: fpl
       POSTGRES_DB: fpl
-    ports: ["5432:5432"]
     volumes: [pgdata:/var/lib/postgresql/data]
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U fpl -d fpl"]
       interval: 5s
-      retries: 10
+      retries: 20
 
   redis:
     image: redis:7
-    ports: ["6379:6379"]
+    restart: unless-stopped
+    volumes: [redisdata:/data]
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
-      retries: 10
+      retries: 20
 
   migrate:
     build: .
+    image: fpl-manager:latest
+    pull_policy: build
     command: ["python", "-m", "app", "migrate"]
     env_file: [{path: .env, required: false}]
     environment: &db_env
@@ -31,7 +37,8 @@ services:
       postgres: {condition: service_healthy}
 
   ingestion-worker:
-    build: .
+    image: fpl-manager:latest
+    pull_policy: never        # built locally by the migrate service
     command: ["python", "-m", "app", "poll"]
     env_file: [{path: .env, required: false}]
     environment: *db_env
@@ -41,14 +48,21 @@ services:
       redis: {condition: service_healthy}
 
   api:
-    build: .
+    image: fpl-manager:latest
+    pull_policy: never
     command: ["uvicorn", "app.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
     env_file: [{path: .env, required: false}]
     environment: *db_env
-    ports: ["8000:8000"]
+    ports: ["127.0.0.1:8000:8000"]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz')"]
+      interval: 10s
+      retries: 10
     depends_on:
       migrate: {condition: service_completed_successfully}
       redis: {condition: service_healthy}
 
 volumes:
   pgdata:
+  redisdata:

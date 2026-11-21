@@ -74,6 +74,50 @@ Open `http://localhost:8000/` (the `api` service in Docker Compose, or `uvicorn 
 from the dashboard. It is plain HTML/CSS/JS served by FastAPI, with no build step or external
 assets, and supports dark mode and phones.
 
+## Run it on your own computer
+
+Everything (database, worker, dashboard) runs in Docker on one computer. Nothing is reachable
+from other machines: the dashboard listens on `localhost` only.
+
+**You need:** Docker Desktop ([download](https://www.docker.com/products/docker-desktop/)), set to
+*start when you sign in*, and a copy of this repository (`git clone`, or GitHub's *Download ZIP*).
+
+**Install** from the repository folder:
+
+* macOS / Linux: `./scripts/install.sh`
+* Windows (PowerShell): `powershell -ExecutionPolicy Bypass -File scripts\install.ps1`
+
+The installer:
+1. asks for your team ID and, optionally, your Odds API key and Telegram bot
+2. generates the secret keys into `.env` (readable only by you)
+3. builds and starts everything
+4. walks you through signing in to FPL (a normal sign-in link; paste back the address you land on)
+5. asks whether to turn on automatic execution
+
+Re-running it is safe: it keeps your `.env`.
+
+**Keep it running around deadlines.** The computer must be on and awake from about 30 minutes
+before each deadline. On macOS, turn on *Prevent automatic sleeping when the display is off*
+(Battery or Energy settings, when on power). On Windows, set *Sleep* to *Never* when plugged in.
+If the computer was asleep through the commit window, you get an alert, and nothing is submitted
+late.
+
+**Everyday commands** (from the repository folder):
+
+| What | Command |
+| --- | --- |
+| Dashboard | open http://localhost:8000 |
+| Turn automatic execution off / on | `docker compose exec ingestion-worker python -m app config --auto-execute off` (or `on`) |
+| Check the FPL sign-in | `docker compose exec ingestion-worker python -m app auth status` |
+| Sign in again (every ~180 days; you get reminders) | `docker compose exec ingestion-worker python -m app auth login` |
+| See the current plan | `docker compose exec ingestion-worker python -m app optimize` |
+| Logs | `docker compose logs -f ingestion-worker` |
+| Update to a new version | `git pull` then `docker compose up -d --build` |
+| Stop everything | `docker compose down` (your data is kept) |
+
+Your data lives in Docker volumes (`pgdata`, `redisdata`) and your settings in `.env`. Back up
+`.env` if you move machines; the stored FPL sign-in can only be decrypted with its `FPL_SECRET_KEY`.
+
 ## Running
 
 ```bash
