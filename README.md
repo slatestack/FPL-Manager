@@ -10,6 +10,8 @@ Autonomous Fantasy Premier League manager, built in phases from the system archi
 | 4 | MILP squad, transfer, lineup, captaincy and chip optimiser (Section 6) | ✅ |
 | 5 | Authenticated executor, token vault, guardrails, post-commit verification (Section 7) | ✅ |
 | 6 | Deadline scheduler, Telegram alerts + kill switch, control-plane API, dashboard (Sections 7.2, 9) | ✅ |
+| 7 | Full-season simulation of the decision system | ✅ |
+| 8 | Bookmaker goalscorer odds, chip forecasting (Triple Captain, Bench Boost) | ✅ |
 
 ## Layout
 
@@ -313,6 +315,27 @@ wakes up exactly at each boundary:
 Mutating endpoints are disabled entirely when `FPL_API_TOKEN` is unset. Tokens are never returned
 by any endpoint. Read endpoints expose your plan, so do not put the API on the public internet
 without a reverse proxy that adds authentication.
+
+## Season simulation (Phase 7)
+
+`python -m app simulate --season 2025-26` replays a past season as if the system had managed a team
+from GW1. Each week it trains only on data from before that deadline, predicts ahead, runs the
+optimiser and chip logic on the simulated team's state, and scores the decision with the real
+points (auto-subs, vice-captain, chips, hits, selling prices, free-transfer rules).
+`--baseline` keeps the GW1 squad all season; `--no-chip-forecast` times chips with thresholds only.
+
+2025/26 results:
+
+| | Points | Per week | Chips used |
+| --- | --- | --- | --- |
+| Full system with chip forecast | **2,023** | 53.2 | 6 of 8 (TC GW17 Haaland 16 pts) |
+| Full system, threshold-only chips | 1,938 | 51.0 | 3 of 8 (TC wasted in GW38) |
+| Same GW1 squad all season | 1,390 | 36.6 | none |
+
+The simulation is pessimistic. No historical injury news or player odds exist, so it can't see that
+a flagged player will miss a match. Realised points were 6% below prediction, almost all of it in the
+first half of the season. Open weakness: the Wildcard is only played when it is about to expire,
+and the Free Hit was never used.
 
 ## Polling cadence (Section 4.2)
 
