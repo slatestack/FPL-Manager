@@ -15,6 +15,7 @@ class OptimizerParams:
     bench_weights: tuple[float, float, float, float] = (0.1, 1.0, 0.6, 0.3)  # GK slot, outfield slots 1..3
     vice_weight: float = 0.01                # tiny tie-break so the vice is a sensible starter
     hit_cost: int = 4
+    max_per_club: int = 3                    # FPL rule; only small test leagues change it
     max_free_transfers: int = 5
     max_hits_per_gw: int = 1                 # from system_config; plans never exceed what execution allows
     ft_terminal_value: float = 1.0           # value of each FT banked beyond the horizon (pts, undiscounted)

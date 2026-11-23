@@ -31,7 +31,7 @@ def validate_plan(plan: Plan, cand: Candidates, state: TeamState, params: Optimi
         counts = Counter(pos(p) for p in sq)
         check(all(counts[p] == n for p, n in SQUAD.items()), f"{tag}: squad composition {dict(counts)}")
         clubs = Counter(team(p) for p in sq)
-        check(max(clubs.values()) <= 3, f"{tag}: more than 3 players from one club {clubs.most_common(1)}")
+        check(max(clubs.values()) <= params.max_per_club, f"{tag}: more than {params.max_per_club} players from one club {clubs.most_common(1)}")
         xi = set(g.starting_xi)
         check(len(xi) == 11 and xi <= sq, f"{tag}: starting XI invalid")
         xc = Counter(pos(p) for p in xi)

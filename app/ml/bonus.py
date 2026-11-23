@@ -46,8 +46,11 @@ class BonusModel:
 def training_rows(matches: pd.DataFrame, cutoff: pd.Timestamp, params: ModelParams) -> pd.DataFrame:
     m = matches.copy()
     m["bps90_prior"] = prior_bps90(m)
-    m = m[(m["kickoff"] < cutoff) & (m["minutes"] > 0) & (m["season_idx"] >= params.bonus_min_season)]
-    m = m[m["team_goals"].notna()]
+    m = m[(m["kickoff"] < cutoff) & (m["minutes"] > 0) & m["team_goals"].notna()]
+    recent = m[m["season_idx"] >= params.bonus_min_season]
+    # Early in the first season with the current bonus rules there is nothing to learn from yet:
+    # fall back to older seasons rather than failing (defensive actions are then treated as 0).
+    m = recent if len(recent) >= 500 else m
     m["pos"] = m["position"].map(POS_CODE)
     m["dc"] = m["defensive_contribution"].fillna(0.0)
     return m

@@ -7,3 +7,4 @@ __pycache__/
 build/
 dist/
 dump.rdb
+sim_results/

@@ -221,6 +221,42 @@ async def _optimize_job(pool, fpl, team_id: int, free_transfers: int | None) -> 
     return job
 
 
+async def _simulate(settings: Settings, season: str, last_gw: int, baseline: bool) -> int:
+    import dataclasses
+    import json as _json
+    from pathlib import Path
+
+    import asyncpg
+
+    from app.ml.data import load_model_data
+    from app.sim.season import SimConfig, simulate
+
+    conn = await asyncpg.connect(settings.database_url)
+    try:
+        data = await load_model_data(conn)
+        data.web_names = {r["code"]: r["web_name"] for r in await conn.fetch(
+            "SELECT DISTINCT ON (code) code, web_name FROM archive_players WHERE season = $1", season)}
+    finally:
+        await conn.close()
+    cfg = SimConfig(season=season, last_gw=last_gw, transfers=not baseline, label="baseline" if baseline else "system")
+
+    def progress(rec, res) -> None:
+        moves = ", ".join(f"{o}→{i}" for o, i in rec.transfers) or "-"
+        chip = f" [{rec.chip}]" if rec.chip else ""
+        hit = f" -{rec.hits * 4}" if rec.hits else ""
+        print(f"GW{rec.gameweek:>2}{chip}: {rec.points:>3} pts{hit} (pred {rec.predicted_xp:5.1f}) total {res.total:>4} | "
+              f"C {rec.captain} {rec.captain_points} | {moves} | {rec.seconds}s", flush=True)
+
+    result = await asyncio.to_thread(simulate, data, cfg, progress=progress)
+    out = Path("sim_results")
+    out.mkdir(exist_ok=True)
+    path = out / f"{season}-{cfg.label}.json"
+    path.write_text(_json.dumps({"summary": result.summary(),
+                                 "gameweeks": [dataclasses.asdict(g) for g in result.gameweeks]}, indent=1, default=str))
+    print(_json.dumps(result.summary()), f"\nsaved {path}")
+    return 0
+
+
 async def _poll(settings: Settings) -> int:
     from app.executor.service import Executor
     from app.notify import TelegramNotifier, build_notifier
@@ -450,6 +486,10 @@ def main(argv: list[str] | None = None) -> int:
     ex = sub.add_parser("execute", help="commit the latest plan to FPL now (guardrails apply)")
     ex.add_argument("--ignore-kill-switch", action="store_true", help="manual override of auto_execute_enabled only")
     ex.add_argument("--check", action="store_true", help="preflight: run every check and build the requests, submit nothing")
+    sm = sub.add_parser("simulate", help="replay a past season with the full decision system (Phase 7)")
+    sm.add_argument("--season", default="2025-26")
+    sm.add_argument("--to-gw", type=int, default=38)
+    sm.add_argument("--baseline", action="store_true", help="keep the GW1 squad all season (no transfers or chips)")
     op = sub.add_parser("optimize", help="plan transfers, lineup, captaincy and chips for FPL_TEAM_ID (dry run)")
     op.add_argument("--refresh", action="store_true", help="re-ingest FPL data and odds and recompute xP first")
     op.add_argument("--free-transfers", type=int, default=None, help="override the reconstructed free transfer count")
@@ -473,6 +513,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.check:
             return asyncio.run(_preflight(settings))
         return asyncio.run(_execute(settings, args.ignore_kill_switch))
+    if args.command == "simulate":
+        return asyncio.run(_simulate(settings, args.season, args.to_gw, args.baseline))
     if args.command == "optimize":
         return asyncio.run(_optimize(settings, args.refresh, args.free_transfers))
     if args.command == "predict":

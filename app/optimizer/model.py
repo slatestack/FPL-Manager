@@ -169,7 +169,7 @@ def solve(
             C(sum(s[i][t] for i in members) >= lo)
             C(sum(s[i][t] for i in members) <= hi)
         for club in np.unique(cand.team):
-            C(sum(x[i][t] for i in range(N) if cand.team[i] == club) <= 3)
+            C(sum(x[i][t] for i in range(N) if cand.team[i] == club) <= params.max_per_club)
         C(sum(s[i][t] for i in range(N)) == 11)
         C(sum(c[i][t] for i in range(N)) == 1)
         C(sum(v[i][t] for i in range(N)) == 1)
