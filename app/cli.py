@@ -226,7 +226,7 @@ async def _optimize_job(pool, fpl, team_id: int, free_transfers: int | None) -> 
     return job
 
 
-async def _simulate(settings: Settings, season: str, last_gw: int, baseline: bool) -> int:
+async def _simulate(settings: Settings, season: str, last_gw: int, baseline: bool, no_forecast: bool = False) -> int:
     import dataclasses
     import json as _json
     from pathlib import Path
@@ -243,7 +243,8 @@ async def _simulate(settings: Settings, season: str, last_gw: int, baseline: boo
             "SELECT DISTINCT ON (code) code, web_name FROM archive_players WHERE season = $1", season)}
     finally:
         await conn.close()
-    cfg = SimConfig(season=season, last_gw=last_gw, transfers=not baseline, label="baseline" if baseline else "system")
+    cfg = SimConfig(season=season, last_gw=last_gw, transfers=not baseline, chip_forecast=not no_forecast,
+                    label="baseline" if baseline else ("system-no-forecast" if no_forecast else "system"))
 
     def progress(rec, res) -> None:
         moves = ", ".join(f"{o}→{i}" for o, i in rec.transfers) or "-"
@@ -495,6 +496,7 @@ def main(argv: list[str] | None = None) -> int:
     sm.add_argument("--season", default="2025-26")
     sm.add_argument("--to-gw", type=int, default=38)
     sm.add_argument("--baseline", action="store_true", help="keep the GW1 squad all season (no transfers or chips)")
+    sm.add_argument("--no-chip-forecast", action="store_true", help="time chips with thresholds only (the old behaviour)")
     op = sub.add_parser("optimize", help="plan transfers, lineup, captaincy and chips for FPL_TEAM_ID (dry run)")
     op.add_argument("--refresh", action="store_true", help="re-ingest FPL data and odds and recompute xP first")
     op.add_argument("--free-transfers", type=int, default=None, help="override the reconstructed free transfer count")
@@ -519,7 +521,7 @@ def main(argv: list[str] | None = None) -> int:
             return asyncio.run(_preflight(settings))
         return asyncio.run(_execute(settings, args.ignore_kill_switch))
     if args.command == "simulate":
-        return asyncio.run(_simulate(settings, args.season, args.to_gw, args.baseline))
+        return asyncio.run(_simulate(settings, args.season, args.to_gw, args.baseline, args.no_chip_forecast))
     if args.command == "optimize":
         return asyncio.run(_optimize(settings, args.refresh, args.free_transfers))
     if args.command == "predict":

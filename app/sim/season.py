@@ -24,6 +24,7 @@ from app.ml import engine
 from app.ml.data import ModelData, season_start
 from app.ml.minutes import anchor_features
 from app.ml.params import ModelParams
+from app.optimizer.chip_forecast import forecast_chips
 from app.optimizer.chips import choose_chip, evaluate_chips
 from app.optimizer.model import build_candidates, solve
 from app.optimizer.params import OptimizerParams
@@ -52,6 +53,8 @@ class SimConfig:
     retrain_every: int = 4
     transfers: bool = True       # False = keep the GW1 squad all season (baseline)
     chips: bool = True
+    chip_forecast: bool = True   # time Triple Captain / Bench Boost with the multi-week forecast
+    forecast_weeks: int = 10
     label: str = "system"
 
     def __post_init__(self) -> None:
@@ -127,8 +130,10 @@ def simulate(data: ModelData, cfg: SimConfig, params: ModelParams | None = None,
         if fh_restore is not None:  # Free Hit week is over: the old squad comes back
             squad, purchase, bank = fh_restore
             fh_restore = None
-        gws = [g for g in range(gw, min(gw + cfg.horizon, cfg.last_gw + 1))]
-        targets = fixtures[fixtures["gameweek"].isin(gws)][["fixture_uid", "gameweek", "home_code", "away_code", "kickoff"]]
+        span = cfg.forecast_weeks if (cfg.chips and cfg.chip_forecast) else cfg.horizon
+        gws_all = [g for g in range(gw, min(gw + max(span, cfg.horizon), cfg.last_gw + 1))]
+        gws = gws_all[: cfg.horizon]
+        targets = fixtures[fixtures["gameweek"].isin(gws_all)][["fixture_uid", "gameweek", "home_code", "away_code", "kickoff"]]
         this_gw = fixtures[fixtures["gameweek"] == gw]
         if this_gw.empty:
             continue
@@ -145,8 +150,9 @@ def simulate(data: ModelData, cfg: SimConfig, params: ModelParams | None = None,
         for p in squad:  # a squad player who left the league can still be sold
             universe.setdefault(p, last_seen[p])
         players = pd.DataFrame([{"key": c, "code": c, **v} for c, v in universe.items()])
-        res = engine.predict(cut, players, targets, cutoff, params, models, anchors, gameweeks=gws)
-        pred = res.by_gameweek.rename(columns={"key": "player_id", "gameweek": "target_gw", "xp": "xp_total"})
+        res = engine.predict(cut, players, targets, cutoff, params, models, anchors, gameweeks=gws_all)
+        pred_all = res.by_gameweek.rename(columns={"key": "player_id", "gameweek": "target_gw", "xp": "xp_total"})
+        pred = pred_all[pred_all["target_gw"].isin(gws)]
         cand_players = players.rename(columns={"code": "player_id", "team_code": "team_id", "price": "now_cost"})
 
         price = {c: v["price"] for c, v in universe.items()}
@@ -165,7 +171,14 @@ def simulate(data: ModelData, cfg: SimConfig, params: ModelParams | None = None,
             plan = solve(cand, state, opt_params, allow_transfers=cfg.transfers)
             validate_plan(plan, cand, state, opt_params)
             if cfg.chips and cfg.transfers and state.chips_available:
-                chosen = choose_chip(evaluate_chips(cand, state, opt_params, plan))
+                forecasts = []
+                if cfg.chip_forecast:
+                    key = list(zip(pred_all["player_id"], pred_all["target_gw"]))
+                    pos_map = {c: v["position"] for c, v in universe.items()}
+                    forecasts = forecast_chips(plan, state, dict(zip(key, pred_all["xp_total"])),
+                                               dict(zip(key, pred_all["n_fixtures"])), dict(zip(key, pred_all["prob_play"])),
+                                               pos_map, gws_all)
+                chosen = choose_chip(evaluate_chips(cand, state, opt_params, plan, forecasts))
                 if chosen is not None:
                     plan = chosen.plan
         g = plan.first
