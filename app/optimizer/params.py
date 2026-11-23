@@ -10,6 +10,7 @@ AGGRESSION = {"CONSERVATIVE": 1.25, "BALANCED": 1.0, "AGGRESSIVE": 0.75}
 
 @dataclass(frozen=True)
 class OptimizerParams:
+    horizon: int = 5                         # gameweeks the transfer plan covers (Section 6)
     gamma: float = 0.85                      # temporal discount
     bench_epsilon: float = 0.08              # bench utility weight
     bench_weights: tuple[float, float, float, float] = (0.1, 1.0, 0.6, 0.3)  # GK slot, outfield slots 1..3

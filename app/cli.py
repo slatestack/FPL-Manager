@@ -183,6 +183,11 @@ def format_plan(result) -> str:
     lines += [f"  {e.chip:<9} gain {e.gain:+6.2f}  {'USE' if e.triggered else 'hold'}  ({e.reason})" for e in result.chip_evaluations]
     if not result.chip_evaluations:
         lines.append("  none available")
+    labels = {"3xc": "Triple Captain", "bboost": "Bench Boost"}
+    for f in result.chip_forecasts:
+        weeks = "  ".join(f"GW{w.gameweek} {w.value:.1f}{'*' if w.double else ''}" for w in f.weeks)
+        lines.append(f"  {labels[f.chip]} forecast (window to GW{f.window_end}): {weeks}")
+        lines.append(f"    -> {'use now' if f.recommendation == 'use_now' else 'hold' if f.recommendation == 'hold' else 'threshold decides'}: {f.reason}")
     lines.append(f"\nLogged as optimization run {result.run_id} (execution_logs DRY_RUN {result.execution_log_id}).")
     return "\n".join(lines)
 

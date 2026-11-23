@@ -157,7 +157,8 @@ async def dashboard(team_id: int | None = None) -> dict[str, object]:
                FROM player_predictions pp WHERE pp.run_timestamp = $1""",
             run["run_timestamp"],
         )
-        gameweeks = sorted({r["target_gw"] for r in preds})
+        gameweeks = sorted({r["target_gw"] for r in preds})[:5]   # table shows the plan horizon
+        preds = [r for r in preds if r["target_gw"] in gameweeks]
         opp = await pool.fetch(
             """SELECT f.gameweek_id AS gw, t.team_id, o.short_name AS opp, (f.team_h = t.team_id) AS home, f.kickoff_time
                FROM fixtures f JOIN teams t ON t.team_id IN (f.team_h, f.team_a)
@@ -210,7 +211,7 @@ async def _optimization_view(run_id: str) -> dict[str, object]:
         "run_id": str(row["id"]), "created_at": row["created_at"], "team_id": row["team_id"],
         "gameweek": row["base_gameweek"], "objective": float(row["objective"]),
         "baseline_objective": float(row["baseline_objective"]), "chip_recommended": row["chip_recommended"],
-        "chip_evaluation": row["chip_evaluation"], "plan": plan, "solver": row["solver"],
+        "chip_evaluation": row["chip_evaluation"], "chip_forecast": row["chip_forecast"], "plan": plan, "solver": row["solver"],
         "team_state": {k: row["inputs"]["team_state"][k] for k in ("squad", "bank", "free_transfers", "chips_available", "warnings")},
     }
 

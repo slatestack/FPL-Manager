@@ -8,7 +8,8 @@ from typing import Any
 
 @dataclass(frozen=True)
 class ModelParams:
-    horizon: int = 5
+    horizon: int = 5                       # playing-time model: matches ahead it is trained for
+    forecast_gameweeks: int = 10           # gameweeks predicted and stored (chip forecasts look this far)
 
     # Team strength (Poisson attack/defence)
     team_xg_weight: float = 0.6            # target = w*xG + (1-w)*goals

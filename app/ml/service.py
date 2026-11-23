@@ -77,7 +77,7 @@ async def run_prediction(pool: asyncpg.Pool, params: ModelParams | None = None, 
     async with pool.acquire() as conn:
         data = await data_mod.load_model_data(conn)
         players = await data_mod.load_current_players(conn)
-        deadlines = await _upcoming_gameweeks(conn, now, params.horizon)
+        deadlines = await _upcoming_gameweeks(conn, now, params.forecast_gameweeks)
         if not deadlines:
             raise RuntimeError("no upcoming gameweeks to predict")
         gws = sorted(deadlines)

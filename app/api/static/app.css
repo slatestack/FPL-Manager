@@ -256,3 +256,15 @@ td.heat { font-variant-numeric: tabular-nums; }
 .steps { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
 .ap-actions { display: flex; gap: 8px; margin-top: 12px; }
 .btn.danger { background: var(--bad); border-color: var(--bad); color: #fff; }
+
+/* Chip forecast */
+#chip-forecast { margin-top: 12px; display: grid; gap: 14px; border-top: 1px solid var(--border); padding-top: 12px; }
+.fc-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.fc-head .pill { margin-left: auto; }
+.fc-bars { display: flex; align-items: flex-end; gap: 6px; margin: 10px 0 6px; overflow-x: auto; padding-bottom: 2px; }
+.fc-col { display: flex; flex-direction: column; align-items: center; gap: 3px; min-width: 34px; flex: 1 0 34px; }
+.fc-bar { width: 100%; max-width: 34px; border-radius: 4px 4px 0 0; background: var(--surface-2); border: 1px solid var(--border); border-bottom: 0; }
+.fc-col.best .fc-bar { background: var(--accent); border-color: var(--accent); }
+.fc-val { font-size: 11px; color: var(--muted); }
+.fc-col.best .fc-val { color: var(--text); font-weight: 700; }
+.fc-gw { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }

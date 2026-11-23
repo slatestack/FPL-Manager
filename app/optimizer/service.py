@@ -17,6 +17,7 @@ from typing import Any
 import asyncpg
 import pandas as pd
 
+from app.optimizer.chip_forecast import forecast_chips
 from app.optimizer.chips import ChipEvaluation, choose_chip, evaluate_chips
 from app.optimizer.model import Candidates, Plan, build_candidates, solve
 from app.optimizer.params import OptimizerParams
@@ -38,6 +39,7 @@ class OptimizationResult:
     names: dict[int, dict[str, Any]]
     prediction_run: Any
     team_short: dict[int, str] = field(default_factory=dict)
+    chip_forecasts: list = field(default_factory=list)
 
 
 def decision_payload(plan: Plan) -> dict[str, Any]:
@@ -53,16 +55,24 @@ def payload_hash(payload: dict[str, Any]) -> str:
     return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
-def optimise(cand: Candidates, state: TeamState, params: OptimizerParams) -> tuple[Plan, Plan, ChipEvaluation | None, list[ChipEvaluation]]:
-    """Pure: base plan, do-nothing baseline, chip counterfactuals, final choice (all validated)."""
+def optimise(cand: Candidates, state: TeamState, params: OptimizerParams, long_pred: pd.DataFrame | None = None,
+             position: dict[int, str] | None = None, names: dict[int, str] | None = None):
+    """Pure: base plan, do-nothing baseline, chip forecast + counterfactuals, final choice (all validated).
+    Returns (plan, baseline, chosen chip, chip evaluations, chip forecasts)."""
     base = solve(cand, state, params)
     validate_plan(base, cand, state, params)
     baseline = solve(cand, state, params, allow_transfers=False)
-    evals = evaluate_chips(cand, state, params, base)
+    forecasts = []
+    if long_pred is not None and len(long_pred) and position is not None:
+        key = list(zip(long_pred["player_id"], long_pred["target_gw"]))
+        forecasts = forecast_chips(
+            base, state, dict(zip(key, long_pred["xp_total"])), dict(zip(key, long_pred["n_fixtures"])),
+            dict(zip(key, long_pred["prob_play"])), position, sorted(int(g) for g in long_pred["target_gw"].unique()), names)
+    evals = evaluate_chips(cand, state, params, base, forecasts)
     chosen = choose_chip(evals)
     plan = chosen.plan if chosen is not None else base
     validate_plan(plan, cand, state, params)
-    return plan, baseline, chosen, evals
+    return plan, baseline, chosen, evals, forecasts
 
 
 async def load_team_state(pool: asyncpg.Pool, fpl, team_id: int, gw: int, *, free_transfers: int | None = None):
@@ -115,8 +125,11 @@ async def run_optimization(
     for w in state.warnings:
         log.warning("team state: %s", w)
 
-    cand = build_candidates(pred, players, state, params)
-    plan, baseline, chosen, evals = await asyncio.to_thread(optimise, cand, state, params)
+    plan_gws = sorted(pred["target_gw"].unique())[: params.horizon]
+    cand = build_candidates(pred[pred["target_gw"].isin(plan_gws)], players, state, params)
+    position = dict(zip(players["player_id"], players["position"]))
+    names = dict(zip(players["player_id"], players["web_name"]))
+    plan, baseline, chosen, evals, forecasts = await asyncio.to_thread(optimise, cand, state, params, pred, position, names)
 
     payload = decision_payload(plan)
     digest = payload_hash(payload)
@@ -137,12 +150,14 @@ async def run_optimization(
         )
         run_id = await conn.fetchval(
             """INSERT INTO optimization_runs (team_id, base_gameweek, prediction_run_timestamp, inputs, params, solver, plan,
-                   chip_evaluation, chip_recommended, objective, baseline_objective, execution_log_id)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING id""",
+                   chip_evaluation, chip_recommended, objective, baseline_objective, execution_log_id, chip_forecast)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) RETURNING id""",
             team_id, g.gameweek, run["run_timestamp"], {"team_state": state.as_dict(), "raw": raw},
             json.loads(json.dumps(params.as_dict())), solver_stats, [asdict(gw) for gw in plan.gameweeks],
             [e.summary() for e in evals], plan.chip, round(plan.objective, 3), round(baseline.objective, 3), exec_id,
+            [f.as_dict() for f in forecasts],
         )
     names = {int(r.player_id): {"name": r.web_name, "position": r.position, "team_id": int(r.team_id), "cost": int(r.now_cost)}
              for r in players.itertuples()}
-    return OptimizationResult(str(run_id), str(exec_id), plan, baseline, chosen, evals, state, names, run["run_timestamp"])
+    return OptimizationResult(str(run_id), str(exec_id), plan, baseline, chosen, evals, state, names, run["run_timestamp"],
+                              chip_forecasts=forecasts)

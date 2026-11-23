@@ -38,7 +38,11 @@ def _unavailable(cand: Candidates, squad: list[int], t: int = 0) -> int:
     return sum(1 for p in squad if cand.p_play[idx[p], t] < 0.5)
 
 
-def evaluate_chips(cand: Candidates, state: TeamState, params: OptimizerParams, base: Plan) -> list[ChipEvaluation]:
+def evaluate_chips(cand: Candidates, state: TeamState, params: OptimizerParams, base: Plan,
+                   forecasts: list | None = None) -> list[ChipEvaluation]:
+    """``forecasts`` (from chip_forecast) adds timing: hold when a later week is clearly better,
+    use when this is the best week of a fully forecast window."""
+    timing = {f.chip: f for f in (forecasts or [])}
     scale = params.threshold_scale
     idx = cand.index()
     out: list[ChipEvaluation] = []
@@ -74,6 +78,13 @@ def evaluate_chips(cand: Candidates, state: TeamState, params: OptimizerParams, 
             details = {"unavailable_assets": unavailable}
             ok = unavailable >= params.wc_min_unavailable and gain >= params.wc_min_gain * scale
             reason = f"{unavailable} unavailable assets (>= {params.wc_min_unavailable} needed), gain {gain:.1f} vs {params.wc_min_gain * scale:.1f}"
+        fc = timing.get(chip)
+        if fc is not None and fc.recommendation == "hold":
+            ok, reason = False, f"forecast: {fc.reason}"
+        elif fc is not None and fc.recommendation == "use_now" and gain > 0:
+            ok, reason = True, f"forecast: {fc.reason}"
+        if fc is not None:
+            details["forecast_best_gameweek"] = fc.best_gameweek
         if not ok and expiring and params.use_expiring_chips and gain > 0:
             ok, reason = True, f"expires this gameweek; gain {gain:.1f} > 0"
         out.append(ChipEvaluation(chip, float(gain), bool(ok), reason, expiring, details, plan))

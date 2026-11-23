@@ -146,6 +146,29 @@ function renderPlan() {
       el("div", {}, el("div", { class: "chip-reason", text: e.reason }), el("div", { class: "gainbar" }, el("span", { style: `width:${Math.max(0, (e.gain / maxGain) * 100)}%` }))),
       el("span", { class: `pill ${e.triggered ? "use" : "hold"}`, text: e.triggered ? "Use" : "Hold" })));
   }
+  renderChipForecast(opt.chip_forecast || []);
+}
+
+// Expected value of Triple Captain / Bench Boost in each week of the chip's window.
+function renderChipForecast(forecasts) {
+  const box = $("chip-forecast");
+  box.replaceChildren();
+  box.hidden = !forecasts.length;
+  for (const f of forecasts) {
+    const max = Math.max(1, ...f.weeks.map((w) => w.value));
+    const verdict = f.recommendation === "use_now" ? ["use", "Use now"] : f.recommendation === "hold" ? ["hold", `Save for GW${f.best_gameweek}`] : ["hold", "Threshold decides"];
+    box.append(el("div", { class: "fc" },
+      el("div", { class: "fc-head" },
+        el("span", { class: "chip-name", text: `${CHIP_LABEL[f.chip]} forecast` }),
+        el("span", { class: "muted", text: `window ends GW${f.window_end}` }),
+        el("span", { class: `pill ${verdict[0]}`, text: verdict[1] })),
+      el("div", { class: "fc-bars", role: "img", "aria-label": `${CHIP_LABEL[f.chip]} expected value by gameweek` },
+        f.weeks.map((w) => el("div", { class: `fc-col${w.gameweek === f.best_gameweek ? " best" : ""}`, title: w.detail + (w.double ? " · double gameweek" : "") },
+          el("span", { class: "fc-val num", text: fmt(w.value, 1) }),
+          el("span", { class: "fc-bar", style: `height:${Math.max(4, (w.value / max) * 64)}px` }),
+          el("span", { class: "fc-gw", text: `${w.gameweek}${w.double ? "×2" : ""}` })))),
+      el("div", { class: "chip-reason", text: f.reason })));
+  }
 }
 
 // ---------------------------------------------------------------- autopilot (Phase 5/6)
