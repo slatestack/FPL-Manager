@@ -105,15 +105,16 @@ async def test_xg_enrichment_maps_players_and_respects_manual_overrides(pool, fp
 
 async def test_odds_enrichment(pool, fpl):
     await pipeline.ingest_core(pool, fpl)
-    with respx.mock(base_url="https://odds.test/v4") as router:
+    with respx.mock(base_url="https://odds.test/v4", assert_all_called=False) as router:
         router.get("/sports/soccer_epl/odds").mock(return_value=httpx.Response(200, json=load_fixture("odds_api_epl.json")))
         router.get("/sports/soccer_epl/events/evt1/odds").mock(
             return_value=httpx.Response(200, json=load_fixture("odds_api_goalscorers_evt1.json"))
         )
-        router.get(url__regex=r".*/events/evt[23]/odds").mock(return_value=httpx.Response(404))
+        later = router.get(url__regex=r".*/events/evt[23]/odds").mock(return_value=httpx.Response(404))
         async with ResilientClient(max_retries=0) as http:
             adapter = OddsApiAdapter(http, api_key="k", base_url="https://odds.test/v4", include_goalscorers=True)
-            result = await pipeline.ingest_odds(pool, adapter)
+            result = await pipeline.ingest_odds(pool, adapter, goalscorers_until=datetime(2026, 11, 22, tzinfo=timezone.utc))
+        assert later.call_count == 0, "no scorer odds (credits) spent on matches after the coming gameweek"
 
     # Liverpool v Everton has no FPL fixture in the test season.
     assert result.details["fixtures"] == 2 and result.details["unmatched_fixtures"] == ["Liverpool v Everton"]

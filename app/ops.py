@@ -12,14 +12,21 @@ from app.ingestion import pipeline
 from app.ingestion.factory import build_sources
 
 
-async def refresh_data(pool: asyncpg.Pool, settings: Settings) -> None:
-    """Latest bootstrap/fixtures and odds (team news, prices, lineup leaks)."""
+async def refresh_data(pool: asyncpg.Pool, settings: Settings, *, goalscorers: bool = True) -> None:
+    """Latest bootstrap/fixtures and odds (team news, prices, lineup leaks). With ``goalscorers``,
+    also the goalscorer odds for the coming gameweek's matches (1 odds credit per match)."""
     async with AsyncExitStack() as stack:
         fpl, _, odds = await build_sources(settings, stack)
         await pipeline.run_job(pool, "core", lambda: pipeline.ingest_core(pool, fpl))
         if odds is not None:
+            until = None
+            if goalscorers:
+                until = await pool.fetchval(
+                    """SELECT MAX(f.kickoff_time) + INTERVAL '1 hour' FROM fixtures f
+                       WHERE f.gameweek_id = (SELECT gameweek_id FROM gameweeks WHERE deadline_time > NOW()
+                                              ORDER BY deadline_time LIMIT 1)""")
             try:
-                await pipeline.run_job(pool, "odds", lambda: pipeline.ingest_odds(pool, odds))
+                await pipeline.run_job(pool, "odds", lambda: pipeline.ingest_odds(pool, odds, goalscorers_until=until))
             except Exception:  # odds are an enrichment; never block a deadline action on them
                 pass
 

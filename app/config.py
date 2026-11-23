@@ -36,8 +36,8 @@ class Settings(BaseSettings):
     odds_api_base_url: str = "https://api.the-odds-api.com/v4"
     odds_regions: str = "uk"
     odds_sport_key: str = "soccer_epl"
-    odds_include_goalscorers: bool = False  # per-event calls; consumes extra API quota
-    odds_min_interval_minutes: int = 30     # quota protection
+    odds_include_goalscorers: bool = True   # coming gameweek only, at the T-24h and T-30m re-plans
+    odds_reserve_credits: int = 40          # never spend the last credits of the month on scorer odds
 
     # Past seasons used as model training / backtest data
     archive_base_url: str = "https://raw.githubusercontent.com/vaastav/Fantasy-Premier-League/master/data"

@@ -58,7 +58,7 @@ async def _inputs_fingerprint(conn: asyncpg.Connection) -> dict[str, Any]:
 
 def compute(
     data: data_mod.ModelData, players: pd.DataFrame, targets: pd.DataFrame, deadlines: dict[int, datetime],
-    odds: pd.DataFrame, now: datetime, params: ModelParams,
+    odds: pd.DataFrame, now: datetime, params: ModelParams, scorer_odds: pd.DataFrame | None = None,
 ) -> engine.EngineResult:
     """Pure computation of one live run (no I/O)."""
     as_of = pd.Timestamp(now)
@@ -67,7 +67,7 @@ def compute(
     anchors = anchor_features(data.matches)
     models = engine.train_models(data, anchors, as_of, params)
     return engine.predict(data, players, targets, as_of, params, models, anchors, avail=avail, odds=odds,
-                          gameweeks=sorted(deadlines))
+                          gameweeks=sorted(deadlines), scorer_odds=scorer_odds)
 
 
 async def run_prediction(pool: asyncpg.Pool, params: ModelParams | None = None, now: datetime | None = None) -> PredictionSummary:
@@ -83,11 +83,12 @@ async def run_prediction(pool: asyncpg.Pool, params: ModelParams | None = None, 
         gws = sorted(deadlines)
         targets = await data_mod.load_target_fixtures(conn, gws, data.current_season)
         odds = await data_mod.load_latest_odds(conn, now)
+        scorer_odds = await data_mod.load_latest_scorer_odds(conn, now, data.current_season)
         fingerprint = await _inputs_fingerprint(conn)
 
     players = players.assign(key=players["player_id"])
     # CPU-bound (model training + simulation): keep the event loop free.
-    res = await asyncio.to_thread(compute, data, players, targets, deadlines, odds, now, params)
+    res = await asyncio.to_thread(compute, data, players, targets, deadlines, odds, now, params, scorer_odds)
 
     run_ts = now.replace(microsecond=(now.microsecond // 1000) * 1000)
     gw = res.by_gameweek

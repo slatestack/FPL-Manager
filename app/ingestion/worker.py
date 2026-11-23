@@ -28,9 +28,9 @@ log = logging.getLogger(__name__)
 HISTORY_INTERVAL = timedelta(hours=12)
 XG_INTERVAL = timedelta(hours=12)
 ENTRY_INTERVAL = timedelta(hours=6)
-STANDARD_ODDS_INTERVAL = timedelta(hours=24)
 PRUNE_INTERVAL = timedelta(hours=24)
 ARCHIVE_INTERVAL = timedelta(days=7)
+ODDS_INTERVAL = {Phase.STANDARD: timedelta(hours=24), Phase.PRE_DEADLINE: timedelta(hours=6)}
 PREDICT_INTERVAL = {  # xP refresh cadence by deadline window
     Phase.STANDARD: timedelta(hours=6),
     Phase.PRE_DEADLINE: timedelta(minutes=30),
@@ -151,12 +151,9 @@ class IngestionWorker:
         if self.xg_adapter is not None and await self._due("xg", XG_INTERVAL):
             adapter = self.xg_adapter
             jobs.append(("xg", lambda: pipeline.ingest_xg(self.pool, adapter)))
-        if self.odds_adapter is not None:
-            odds_interval = (
-                timedelta(minutes=self.settings.odds_min_interval_minutes)
-                if phase in (Phase.PRE_DEADLINE, Phase.CRITICAL)
-                else STANDARD_ODDS_INTERVAL
-            )
+        if self.odds_adapter is not None and phase in (Phase.STANDARD, Phase.PRE_DEADLINE):
+            # Team odds only (2 credits). Goalscorer odds are fetched by the T-24h and T-30m re-plans.
+            odds_interval = ODDS_INTERVAL[phase]
             if await self._due("odds", odds_interval):
                 adapter_o = self.odds_adapter
                 jobs.append(("odds", lambda: pipeline.ingest_odds(self.pool, adapter_o)))

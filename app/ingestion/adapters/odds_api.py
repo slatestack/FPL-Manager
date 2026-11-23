@@ -89,6 +89,10 @@ def parse_goalscorer_odds(event: dict[str, Any]) -> list[PlayerGoalOddsRecord]:
 
 
 class OddsApiAdapter:
+    """Team odds in one bulk call (2 credits); goalscorer odds per match (1 credit each), only for
+    matches kicking off before ``goalscorers_until`` (the coming gameweek) and only while the
+    account keeps at least ``reserve_credits`` in hand."""
+
     source = "the-odds-api"
 
     def __init__(
@@ -100,6 +104,7 @@ class OddsApiAdapter:
         sport_key: str = "soccer_epl",
         regions: str = "uk",
         include_goalscorers: bool = False,
+        reserve_credits: int = 40,
     ):
         self._http = http
         self._key = api_key
@@ -107,27 +112,40 @@ class OddsApiAdapter:
         self._sport = sport_key
         self._regions = regions
         self._goalscorers = include_goalscorers
+        self.reserve_credits = reserve_credits
+        self.credits_remaining: int | None = None
 
-    async def fetch(self) -> OddsSnapshot:
+    async def _get(self, url: str, params: dict[str, Any]) -> Any:
+        resp = await self._http.request("GET", url, params={"apiKey": self._key, **params})
+        remaining = resp.headers.get("x-requests-remaining")
+        if remaining is not None:
+            try:
+                self.credits_remaining = int(float(remaining))
+            except ValueError:
+                pass
+        return resp.json()
+
+    async def fetch(self, *, goalscorers_until: datetime | None = None) -> OddsSnapshot:
         captured = datetime.now(timezone.utc)
-        events = await self._http.get_json(
-            f"{self._base}/sports/{self._sport}/odds",
-            params={"apiKey": self._key, "regions": self._regions, "markets": "h2h,totals", "oddsFormat": "decimal"},
-        )
+        events = await self._get(f"{self._base}/sports/{self._sport}/odds",
+                                 {"regions": self._regions, "markets": "h2h,totals", "oddsFormat": "decimal"})
         snapshot = OddsSnapshot(source=self.source, captured_at=captured)
         for event in events:
             rec = parse_match_odds(event)
             if rec is not None:
                 snapshot.fixtures.append(rec)
-        if self._goalscorers:
-            for event in events:
+        if self._goalscorers and goalscorers_until is not None:
+            soon = [e for e in events if _parse_time(e["commence_time"]) <= goalscorers_until]
+            for event in soon:
+                if self.credits_remaining is not None and self.credits_remaining <= self.reserve_credits:
+                    log.warning("odds credits low (%s left); skipping goalscorer odds", self.credits_remaining)
+                    break
                 try:
-                    detail = await self._http.get_json(
-                        f"{self._base}/sports/{self._sport}/events/{event['id']}/odds",
-                        params={"apiKey": self._key, "regions": self._regions, "markets": GOALSCORER_MARKET, "oddsFormat": "decimal"},
-                    )
+                    detail = await self._get(f"{self._base}/sports/{self._sport}/events/{event['id']}/odds",
+                                             {"regions": self._regions, "markets": GOALSCORER_MARKET, "oddsFormat": "decimal"})
                 except UpstreamError as exc:
                     log.warning("goalscorer odds unavailable for %s: %s", event.get("id"), exc)
                     continue
                 snapshot.goalscorers.extend(parse_goalscorer_odds(detail))
+        snapshot.credits_remaining = self.credits_remaining
         return snapshot

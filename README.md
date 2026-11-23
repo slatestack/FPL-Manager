@@ -183,9 +183,15 @@ How it works, per player and upcoming fixture:
    team rate. Clean sheets, goals conceded (−1 per 2), saves (1 per 3, per opponent xG faced)
    and defensive contributions (DEF ≥ 10, MID/FWD ≥ 12, negative binomial) have exact
    closed forms. Cards, own goals and penalty misses/saves use per-90 rates.
-4. **Bonus.** LightGBM learns bonus from realised match stats, and is averaged over 300
+4. **Bookmaker goalscorer odds.** For the coming gameweek, anytime-scorer prices from UK
+   bookmakers (including the Betfair exchange) are converted to scoring rates. Each team is scaled
+   so its rates, weighted by P(play), add up to the team's expected goals, which removes the
+   bookmaker margin. The result is blended 60/40 with the model's share of team goals. Odds are
+   fetched at the T−24h and T−30m re-plans only (~1 credit per match). A reserve guard stops
+   spending before the monthly credit allowance runs out.
+5. **Bonus.** LightGBM learns bonus from realised match stats, and is averaged over 300
    simulated matches per fixture.
-5. **Gameweeks.** Double gameweeks sum their fixtures; blank gameweeks are explicit zero rows.
+6. **Gameweeks.** Double gameweeks sum their fixtures; blank gameweeks are explicit zero rows.
 
 The scoring rules were verified by reproducing FPL's `total_points` exactly for every 2026/27
 match played so far (3,084 of 3,084).

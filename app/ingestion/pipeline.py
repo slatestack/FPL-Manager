@@ -297,8 +297,8 @@ def _match_fixture(
     return min(candidates, key=lambda f: abs(f["kickoff_time"] - commence))["fixture_id"]
 
 
-async def ingest_odds(pool: asyncpg.Pool, adapter: OddsAdapter) -> JobResult:
-    snapshot: OddsSnapshot = await adapter.fetch()
+async def ingest_odds(pool: asyncpg.Pool, adapter: OddsAdapter, *, goalscorers_until: datetime | None = None) -> JobResult:
+    snapshot: OddsSnapshot = await adapter.fetch(goalscorers_until=goalscorers_until)
     async with pool.acquire() as conn, conn.transaction():
         team_resolver, player_resolver = await _resolvers(conn)
         fixtures = await _fixture_lookup(conn)
@@ -363,6 +363,7 @@ async def ingest_odds(pool: asyncpg.Pool, adapter: OddsAdapter) -> JobResult:
             "unmatched_fixtures": unmatched_fixtures[:25],
             "goalscorers": len(scorer_rows),
             "unmatched_goalscorers": len(unmatched_players),
+            "credits_remaining": snapshot.credits_remaining,
         },
     )
 

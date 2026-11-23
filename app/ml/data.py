@@ -199,3 +199,18 @@ async def load_latest_odds(conn: asyncpg.Connection, as_of: datetime) -> pd.Data
             as_of,
         )
     )
+
+
+async def load_latest_scorer_odds(conn: asyncpg.Connection, as_of: datetime, season: str) -> pd.DataFrame:
+    """Latest anytime-goalscorer prices per player and fixture, captured before ``as_of``."""
+    df = _frame(
+        await conn.fetch(
+            """SELECT DISTINCT ON (player_id, fixture_id) player_id AS key, fixture_id, median_decimal_odds
+               FROM player_goal_odds WHERE captured_at <= $1
+               ORDER BY player_id, fixture_id, captured_at DESC""",
+            as_of,
+        )
+    )
+    if len(df):
+        df["fixture_uid"] = season + ":" + df["fixture_id"].astype(str)
+    return df

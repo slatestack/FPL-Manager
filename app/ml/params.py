@@ -17,6 +17,8 @@ class ModelParams:
     team_ridge: float = 4.0
     promoted_prior: float = -0.15          # log-rate prior for attack & defence of promoted sides
     odds_weight: float = 0.7               # blend of bookmaker-implied vs model goal rates
+    scorer_odds_weight: float = 0.6        # blend of bookmaker anytime-scorer odds vs model goal share
+    scorer_odds_min_players: int = 8       # a team needs this many priced players for its odds to be used
 
     # Player rates
     rate_half_life_days: float = 365.0

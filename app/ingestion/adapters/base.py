@@ -68,6 +68,7 @@ class OddsSnapshot:
     captured_at: datetime
     fixtures: list[FixtureOddsRecord] = field(default_factory=list)
     goalscorers: list[PlayerGoalOddsRecord] = field(default_factory=list)
+    credits_remaining: int | None = None
 
 
 class XGAdapter(Protocol):
@@ -79,4 +80,4 @@ class XGAdapter(Protocol):
 class OddsAdapter(Protocol):
     source: str
 
-    async def fetch(self) -> OddsSnapshot: ...
+    async def fetch(self, *, goalscorers_until: datetime | None = None) -> OddsSnapshot: ...

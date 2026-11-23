@@ -38,6 +38,7 @@ async def build_sources(
             sport_key=settings.odds_sport_key,
             regions=settings.odds_regions,
             include_goalscorers=settings.odds_include_goalscorers,
+            reserve_credits=settings.odds_reserve_credits,
         )
     return fpl, xg, odds
 

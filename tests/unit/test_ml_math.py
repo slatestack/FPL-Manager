@@ -114,3 +114,41 @@ def test_aggregate_sums_double_gameweeks_and_zeroes_blanks():
     assert gw.loc[(1, 12), "prob_play"] == pytest.approx(1 - 0.1 * 0.2)
     assert gw.loc[(1, 13), "xp"] == 0 and gw.loc[(1, 13), "n_fixtures"] == 0
     assert gw.loc[(2, 11), "xp"] == 0
+
+
+def _pf(n_players: int, odds: list[float] | None):
+    import numpy as np
+    rows = []
+    for i in range(n_players):
+        rows.append(dict(key=i, fixture_uid="s:1", team_code=1, position="MID", lam_team=2.0, share_g=0.08,
+                         p_s60=0.8, p_slt=0.1, p_sub=0.05, m_s60=88.0, m_slt=55.0, m_sub=20.0))
+    pf = pd.DataFrame(rows)
+    so = None if odds is None else pd.DataFrame({"key": range(len(odds)), "fixture_uid": "s:1", "median_decimal_odds": odds})
+    return pf, so
+
+
+def test_scorer_odds_remove_margin_and_keep_team_total():
+    from app.ml.engine import OWN_GOAL_SHARE, apply_scorer_odds
+
+    odds = [1.9, 2.5, 3.2, 4.0, 5.5, 7.0, 9.0, 13.0, 17.0, 21.0, 26.0]
+    pf, so = _pf(11, odds)
+    out = apply_scorer_odds(pf, so, ModelParams(scorer_odds_weight=1.0))
+    assert out["scorer_odds_used"].all()
+    p_play = out.p_s60 + out.p_slt + out.p_sub
+    emin = (out.p_s60 * out.m_s60 + out.p_slt * out.m_slt + out.p_sub * out.m_sub) / p_play
+    team_goals = (p_play * out.share_g * out.lam_team * emin / 90).sum()
+    assert team_goals == pytest.approx(2.0 * (1 - OWN_GOAL_SHARE), rel=1e-6), "margin removed: totals match the team rate"
+    assert list(out.share_g) == sorted(out.share_g, reverse=True), "shorter odds, bigger share"
+
+
+def test_scorer_odds_blend_and_guards():
+    from app.ml.engine import apply_scorer_odds
+
+    pf, so = _pf(11, [3.0] * 11)
+    half = apply_scorer_odds(pf, so, ModelParams(scorer_odds_weight=0.5))
+    full = apply_scorer_odds(pf, so, ModelParams(scorer_odds_weight=1.0))
+    assert half.share_g.iloc[0] == pytest.approx(0.5 * full.share_g.iloc[0] + 0.5 * 0.08)
+    few, so_few = _pf(11, [3.0] * 5)          # too few priced players: leave the model alone
+    assert not apply_scorer_odds(few, so_few, ModelParams()).scorer_odds_used.any()
+    none, _ = _pf(11, None)
+    assert apply_scorer_odds(none, None, ModelParams()).share_g.eq(0.08).all()

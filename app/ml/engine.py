@@ -79,6 +79,43 @@ def fixture_rates(targets: pd.DataFrame, ratings: TeamRatings, odds: pd.DataFram
     return t
 
 
+OWN_GOAL_SHARE = 0.03  # roughly 3% of goals are own goals, credited to no player
+
+
+def apply_scorer_odds(pf: pd.DataFrame, scorer_odds: pd.DataFrame | None, params: ModelParams) -> pd.DataFrame:
+    """Blend bookmaker anytime-goalscorer odds into each player's share of his team's goals.
+
+    Anytime prices (bets are void if the player doesn't play) give a goal rate given he plays,
+    mu = -ln(1 - 1/odds), which still contains the bookmaker's margin. Per team and match, all
+    rates are scaled by one factor so that sum(P(play) * mu) equals the team's expected goals:
+    that removes the margin and keeps the team total anchored to the match odds/model.
+    """
+    pf = pf.copy()
+    pf["share_g_model"] = pf["share_g"]
+    pf["scorer_odds_used"] = False
+    if scorer_odds is None or scorer_odds.empty:
+        return pf
+    odds = scorer_odds.groupby(["key", "fixture_uid"], as_index=False)["median_decimal_odds"].median()
+    pf = pf.merge(odds, on=["key", "fixture_uid"], how="left")
+    p_play = (pf["p_s60"] + pf["p_slt"] + pf["p_sub"]).to_numpy()
+    emin = (pf["p_s60"] * pf["m_s60"] + pf["p_slt"] * pf["m_slt"] + pf["p_sub"] * pf["m_sub"]).to_numpy() / np.maximum(p_play, 1e-9)
+    p_raw = np.clip(1.0 / pf["median_decimal_odds"].to_numpy(dtype=float), 0.0, 0.95)
+    mu_raw = -np.log1p(-p_raw)
+    pf["_mu_raw"], pf["_w"] = mu_raw, p_play * mu_raw
+    has = pf["median_decimal_odds"].notna() & (p_play > 0.05)
+    grp = pf[has].groupby(["team_code", "fixture_uid"])
+    stats = grp.agg(n=("_w", "size"), mass=("_w", "sum"), lam=("lam_team", "first"))
+    stats["k"] = stats["lam"] * (1 - OWN_GOAL_SHARE) / stats["mass"].clip(lower=1e-9)
+    ok = stats[(stats["n"] >= params.scorer_odds_min_players) & stats["k"].between(0.4, 1.2)]["k"]
+    pf = pf.join(ok.rename("_k"), on=["team_code", "fixture_uid"])
+    use = has & pf["_k"].notna()
+    share_odds = pf["_k"] * pf["_mu_raw"] / (pf["lam_team"] * emin / 90.0)
+    w = params.scorer_odds_weight
+    pf.loc[use, "share_g"] = w * share_odds[use] + (1 - w) * pf.loc[use, "share_g_model"]
+    pf.loc[use, "scorer_odds_used"] = True
+    return pf.drop(columns=["_mu_raw", "_w", "_k"])
+
+
 def player_fixture_frame(players: pd.DataFrame, fx: pd.DataFrame) -> pd.DataFrame:
     """Cross players with their team's target fixtures; k = 1-based order of the team's fixtures."""
     home = fx.rename(columns={"home_code": "team_code", "away_code": "opp_code", "lh": "lam_team", "la": "lam_opp"})
@@ -103,6 +140,7 @@ def predict(
     avail: pd.DataFrame | None = None,
     odds: pd.DataFrame | None = None,
     gameweeks: list[int] | None = None,
+    scorer_odds: pd.DataFrame | None = None,
 ) -> EngineResult:
     """``players``: key, code, team_code, position, price. ``targets``: fixture_uid, gameweek,
     home_code, away_code, kickoff (+ fixture_id for odds). ``avail``: key, gameweek, p_avail."""
@@ -146,6 +184,8 @@ def predict(
     pf["m_slt"] = pos.map(league.minutes_start_lt60)
     pf["m_sub"] = pos.map(league.minutes_sub)
     pf["saves_mu90"] = pf["saves_per_xga"] * pf["lam_opp"]
+    pf = apply_scorer_odds(pf, scorer_odds, params)
+    pos = pf["position"]
 
     g_pts = pos.map(sc.goals_scored).to_numpy(dtype=float)
     cs_pts = pos.map(sc.clean_sheets).to_numpy(dtype=float)
@@ -205,6 +245,7 @@ def predict(
         "team_home_advantage": float(np.exp(ratings.home)),
         "team_avg_rate": ratings.avg_rate,
         "minutes_train_rows": models.minutes.n_train,
+        "player_fixtures_with_scorer_odds": int(pf["scorer_odds_used"].sum()),
         "bonus_train_rows": models.bonus.n_train,
     }
     return EngineResult(by_fixture=pf, by_gameweek=gw, fixtures=fx, diagnostics=diag)
